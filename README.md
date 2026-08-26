@@ -1,5 +1,7 @@
 # 研衡 YanHeng · 理论与工具知识库
 
+YanHeng: local A-share research desk (PIT factors, ranking model, advice cards, risk dashboard). Personal research only — not investment advice, no brokerage or auto-trading.
+
 面向「股票预测 + 量化投研 + 场景化买卖/加减仓/风险评估建议」产品的**理论与背调知识库**。
 本目录（`docs/`、`knowledge/`）只沉淀概念、理论、方法、工具与竞品洞察，**不包含交易执行
 代码**。基于本知识库落地的实际系统实现（数据抓取/因子研究/模型训练/回测/持仓建议引擎/
