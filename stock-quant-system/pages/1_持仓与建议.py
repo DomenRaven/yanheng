@@ -8,8 +8,9 @@ import pandas as pd
 import streamlit as st
 
 from common.db import get_connection, init_schema
+from common.ui_theme import apply_theme, render_advice_card
 
-st.set_page_config(page_title="持仓与建议", page_icon="💼", layout="wide")
+apply_theme(page_title="持仓与建议", page_icon="💼")
 st.title("💼 持仓与建议")
 
 conn = get_connection()
@@ -23,7 +24,7 @@ with st.form("add_position_form", clear_on_submit=True):
     cost_price = c3.number_input("建仓成本价（每股）", min_value=0.0, step=0.01, format="%.2f")
     opened_at = c4.date_input("建仓日期", value=dt.date.today())
     note = st.text_input("备注（可选）")
-    submitted = st.form_submit_button("添加持仓批次")
+    submitted = st.form_submit_button("添加持仓批次", type="primary")
     if submitted:
         if not symbol or shares <= 0 or cost_price <= 0:
             st.error("股票代码、股数、成本价均为必填且需大于0")
@@ -45,29 +46,30 @@ today = dt.date.today().strftime("%Y-%m-%d")
 position_summary = compute_position_summary(conn, today)
 
 if position_summary.empty:
-    st.info("暂无持仓记录。")
+    st.info("暂无持仓记录。在上方表单录入你的第一笔持仓吧。")
 else:
     for _, row in position_summary.iterrows():
-        cols = st.columns([2, 1, 1, 1, 1, 1])
-        cols[0].write(f"**{row['symbol']}** ({row['lot_id'][:8]})")
-        cols[1].write(f"{row['shares']:.0f} 股")
-        cols[2].write(f"成本 ¥{row['cost_price']:.2f}")
-        has_price = pd.notna(row["last_close"])
-        cols[3].write(f"最新 ¥{row['last_close']:.2f}" if has_price else "无价格")
-        pnl_pct = row["unrealized_pnl_pct"]
-        has_pnl = pd.notna(pnl_pct)
-        color = "🔴" if has_pnl and pnl_pct < 0 else "🟢"
-        cols[4].write(f"{color} {pnl_pct:.1%}" if has_pnl else "—")
-        if cols[5].button("平仓", key=f"close_{row['lot_id']}"):
-            conn.execute(
-                "UPDATE positions SET is_closed = TRUE, closed_at = ? WHERE lot_id = ?",
-                [dt.date.today(), row["lot_id"]],
-            )
-            st.rerun()
+        with st.container(border=True):
+            cols = st.columns([2, 1, 1, 1, 1, 1])
+            cols[0].markdown(f"**{row['symbol']}** (批次 {row['lot_id'][:8]})")
+            cols[1].write(f"{row['shares']:.0f} 股")
+            cols[2].write(f"成本 ¥{row['cost_price']:.2f}")
+            has_price = pd.notna(row["last_close"])
+            cols[3].write(f"最新 ¥{row['last_close']:.2f}" if has_price else "无价格")
+            pnl_pct = row["unrealized_pnl_pct"]
+            has_pnl = pd.notna(pnl_pct)
+            color = "🔴" if has_pnl and pnl_pct < 0 else "🟢"
+            cols[4].markdown(f"**{color} {pnl_pct:.1%}**" if has_pnl else "—")
+            if cols[5].button("平仓", key=f"close_{row['lot_id']}"):
+                conn.execute(
+                    "UPDATE positions SET is_closed = TRUE, closed_at = ? WHERE lot_id = ?",
+                    [dt.date.today(), row["lot_id"]],
+                )
+                st.rerun()
 
 st.divider()
 st.subheader("建议卡片（基于最新一次掘金扫描 + 当前持仓状态）")
-st.caption("点击下方按钮触发一次新的建议生成（会重新跑模型打分，可能需要几秒到几十秒）。")
+st.caption("点击下方按钮触发一次新的建议生成（会重新跑模型打分，可能需要几秒到几十秒）；生成后首页「今日决策速览」也会同步更新。")
 
 if st.button("🔄 生成/刷新建议卡片", type="primary"):
     with st.spinner("正在跑掘金扫描 + 生成建议卡片..."):
@@ -81,22 +83,14 @@ if result:
     if result["position_cards"]:
         st.markdown("### 持仓相关建议")
         for card in result["position_cards"]:
-            action_emoji = {
-                "stop_loss": "🛑", "take_profit": "💰", "reduce": "⚠️",
-                "hold": "✅", "watch": "👀", "rebalance": "⚖️",
-            }.get(card["action"], "•")
-            with st.expander(f"{action_emoji} {card['symbol']} —— {card['action']}（置信度 {card['confidence']:.0%}）"):
-                st.write("**理由**：")
-                for r in card["reasons"]:
-                    st.write(f"- [{r['type']}] {r['detail']}")
-                if card["risks"]:
-                    st.write("**风险提示**：")
-                    for r in card["risks"]:
-                        st.write(f"- ⚠️ {r}")
-                st.write("**失效条件**：" + "；".join(card["invalid_if"]))
-                st.caption(card["disclaimer"])
+            render_advice_card(card)
     else:
         st.info("当前无持仓相关建议（可能还没有录入持仓）。")
+
+    if result.get("watchlist_cards"):
+        with st.expander(f"👀 观察名单建议（{len(result['watchlist_cards'])}条，未持有但进入掘金Top候选）"):
+            for card in result["watchlist_cards"]:
+                render_advice_card(card)
 else:
     st.info("点击上方按钮生成建议卡片。")
 

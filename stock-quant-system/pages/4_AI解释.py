@@ -7,10 +7,11 @@ import datetime as dt
 import streamlit as st
 
 from common.db import get_connection, init_schema
+from common.ui_theme import apply_theme
 from llm.explain_assistant import LLMNotConfiguredError, build_context_text, generate_explanation
 from llm.news_fetch import fetch_stock_news
 
-st.set_page_config(page_title="AI解释", page_icon="🤖", layout="wide")
+apply_theme(page_title="AI解释", page_icon="🤖")
 st.title("🤖 AI解释助手")
 st.caption(
     "本页只做\"把已算好的结果翻译成人话\"，不用LLM生成预测或买卖建议——所有量化结论都来自"

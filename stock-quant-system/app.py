@@ -5,21 +5,25 @@ Phase 4 Streamlit 入口——持仓驾驶舱总览页。
 本应用不接券商API、不自动下单、不承诺收益。所有"建议"都是研究辅助信息，最终交易决策
 及风险由使用者自行承担——每个建议卡片都带这句免责声明，本页顶部再次强调一次。
 
-启动方式：`streamlit run app.py`（工作目录为项目根目录，需要先激活 `.venv`）。
+启动方式：`streamlit run app.py`（工作目录为项目根目录，需要先激活 `.venv`），
+或双击项目根目录下打包好的一键启动器（见 `docs/开发者使用说明书.docx` 打包章节）。
 """
 from __future__ import annotations
 
 import datetime as dt
+import json
 
 import pandas as pd
 import streamlit as st
 
+from advice.advice_engine import build_priority_digest, load_latest_advice_cards
 from common.db import get_connection, init_schema
+from common.ui_theme import apply_theme, render_advice_card, section_header
 from risk.portfolio_risk import compute_concentration, compute_position_summary
 
-st.set_page_config(page_title="个人量化研究系统", page_icon="📈", layout="wide")
+apply_theme(page_title="研衡 YanHeng · 持仓驾驶舱", page_icon="📈", layout="wide")
 
-st.title("📈 个人量化研究系统 —— 持仓驾驶舱")
+st.title("📈 研衡 YanHeng —— 持仓驾驶舱")
 st.caption(
     "本工具全部输出仅供个人研究辅助，不构成投资建议；不接入券商账户、不自动下单，"
     "最终交易决策及风险由使用者自行承担。"
@@ -38,7 +42,6 @@ try:
 
     latest_champion = None
     try:
-        import json
         with open("mlops/registry/champion.json", encoding="utf-8") as f:
             latest_champion = json.load(f)
     except FileNotFoundError:
@@ -47,17 +50,42 @@ try:
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("持仓股票数", n_positions)
     col2.metric("持仓市值合计", f"¥{total_market_value:,.0f}" if total_market_value else "—")
-    col3.metric("浮动盈亏合计", f"¥{total_pnl:,.0f}" if position_summary is not None and not position_summary.empty else "—",
-                delta=f"{total_pnl:,.0f}" if total_pnl else None)
+    col3.metric(
+        "浮动盈亏合计",
+        f"¥{total_pnl:,.0f}" if position_summary is not None and not position_summary.empty else "—",
+        delta=f"{total_pnl:,.0f}" if total_pnl else None,
+    )
     col4.metric("生产冠军模型", latest_champion["run_id"] if latest_champion else "未设置")
 
     st.divider()
 
-    if position_summary.empty:
-        st.info("还没有录入任何持仓。前往左侧「持仓与建议」页面手动录入你的持仓，"
-                "或直接查看「掘金扫描」页面获取全市场候选标的。")
+    # ---- 今日决策速览：把最近一次「持仓与建议」页生成的结果，按紧急程度汇总展示 ----
+    st.subheader("🎯 今日决策速览")
+    st.caption("按紧急程度自动排序：止损/减仓类风控信号优先展示，用大白话说明该做什么，不用逐页翻找。")
+    as_of, latest_cards = load_latest_advice_cards(conn)
+    if not latest_cards:
+        st.info(
+            "还没有生成过建议卡片。前往左侧「持仓与建议」页面录入持仓，"
+            "点击「生成/刷新建议卡片」后，这里会自动显示今天最需要关注的操作。"
+        )
     else:
-        st.subheader("持仓明细（按symbol聚合）")
+        digest = build_priority_digest(latest_cards, [], top_n=6)
+        urgent = [c for c in digest if c.get("is_urgent")]
+        if urgent:
+            st.warning(f"⚠️ 有 {len(urgent)} 条需要重点关注的风控提示（止损/减仓/止盈/再平衡），建议今天处理。")
+        st.caption(f"数据对应交易日：{as_of}（点击「持仓与建议」页刷新可获取最新结果）")
+        for card in digest:
+            render_advice_card(card)
+
+    st.divider()
+
+    if position_summary.empty:
+        st.info(
+            "还没有录入任何持仓。前往左侧「持仓与建议」页面手动录入你的持仓，"
+            "或直接查看「掘金扫描」页面获取全市场候选标的。"
+        )
+    else:
+        section_header("持仓明细（按symbol聚合）", help_term="集中度", level=2)
         display = concentration.merge(
             position_summary.groupby("symbol", as_index=False).agg(
                 unrealized_pnl=("unrealized_pnl", "sum"),
@@ -82,6 +110,8 @@ finally:
 st.divider()
 st.markdown(
     "**导航**：「持仓与建议」录入/管理持仓并查看建议卡片 · 「掘金扫描」查看全市场模型排名 · "
-    "「风险仪表盘」组合风险指标 · 「AI解释」用DeepSeek把结构化信号翻译成人话（需配置API Key）。\n\n"
+    "「行情图表」看K线与持仓成本/止盈止损参考线 · 「风险仪表盘」组合风险指标 · "
+    "「AI解释」用通义千问把结构化信号翻译成人话（需配置API Key） · "
+    "「历史建议复盘」核对过去建议后续走势 · 「名词解释」大白话说明专业术语。\n\n"
     "详细方法论与验收记录见项目根目录 `docs/phase*-acceptance-report.md`。"
 )

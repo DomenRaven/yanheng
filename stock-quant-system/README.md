@@ -18,6 +18,8 @@ LLM解释层已上线Streamlit本地应用，对齐`docs/00-总览/02-产品定�
 - Phase 2 模型生命周期管理+行为金融信号层结果：`docs/phase2-acceptance-report.md`
 - Phase 3 深度学习挑战者评估结果（结论：维持LightGBM基线）：`docs/phase3-acceptance-report.md`
 - Phase 4 应用层（持仓/建议/风险/组合优化/LLM解释）验收结果：`docs/phase4-acceptance-report.md`
+- 可用性测试通过后的UI优化（放大字体/建议卡片改版/今日决策速览/行情图表/名词解释/历史建议复盘/
+  一键启动exe打包）：`docs/ux-upgrade-notes.md`
 - 用户手册 / 开发者手册（Word）：`docs/manuals/用户使用说明书.docx`、`docs/manuals/开发者使用说明书.docx`
 - 本项目的开发工作流与道德约束：`.cursor/rules/quant-dev-loop.mdc`、
   `.cursor/rules/vibe-coding-ethics.mdc`（工作区根目录）
@@ -69,7 +71,8 @@ stock-quant-system/
 │   ├── config.py                # 配置加载
 │   ├── db.py                    # DuckDB 连接与表结构（universe/daily_quotes/fundamentals/sync_log）
 │   ├── http_retry.py            # 通用重试装饰器（指数退避+随机抖动）+ 限速sleep
-│   └── tushare_client.py        # Tushare共用客户端 + 逐股票/逐交易日通用批处理编排函数
+│   ├── tushare_client.py        # Tushare共用客户端 + 逐股票/逐交易日通用批处理编排函数
+│   └── ui_theme.py              # UI优化新增：全局CSS放大字体 + 建议卡片渲染 + 术语表(❓气泡)
 ├── ingestion/
 │   ├── universe.py              # 股票池同步（代码/名称/交易所/板块/ST标记/退市标记）
 │   ├── quotes_batch.py          # 全市场日线行情批量/增量抓取
@@ -113,12 +116,17 @@ stock-quant-system/
 │   └── drift_monitor.py          # 特征PSI + Walk-Forward趋势 + 生产样本外IC + 滚动夏普
 ├── scripts/
 │   └── daily_pipeline.py        # 全ingestion模块统一增量更新入口（唯一定时任务入口）
-├── app.py                        # Phase 4：Streamlit入口——持仓驾驶舱总览
-├── pages/                        # Phase 4：Streamlit多页应用
-│   ├── 1_持仓与建议.py            # 手动持仓录入 + 建议卡片（含组合优化再平衡覆盖层）
+├── app.py                        # Phase 4：Streamlit入口——持仓驾驶舱总览 + 今日决策速览
+├── launcher.py                   # UI优化：一键启动器源码（打包为 研衡启动器.exe）
+├── .streamlit/config.toml        # UI优化：全局主题配色
+├── pages/                        # Streamlit多页应用
+│   ├── 1_持仓与建议.py            # 手动持仓录入 + 建议卡片（含组合优化再平衡覆盖层+具体价格）
 │   ├── 2_掘金扫描.py              # 全市场模型排名 + 行为金融冲突提示
 │   ├── 3_风险仪表盘.py            # 集中度/波动率/相关性/VaR/回撤可视化
-│   └── 4_AI解释.py               # 结构化信号+新闻 -> DeepSeek自然语言解释
+│   ├── 4_AI解释.py               # 结构化信号+新闻 -> 通义千问自然语言解释
+│   ├── 5_行情图表.py              # UI优化新增：K线 + 持仓成本/止盈止损参考线
+│   ├── 6_名词解释.py              # UI优化新增：RankIC/VaR/因子等大白话术语表
+│   └── 7_历史建议复盘.py          # UI优化新增：过去建议 vs 后续实际涨跌幅核对
 ├── data/
 │   ├── warehouse.duckdb         # 数据仓库（不入库，见 .gitignore）
 │   ├── feature_panel.parquet    # research/panel.py 产出的月度特征面板缓存
@@ -209,8 +217,9 @@ cd "e:\妙妙工具\炒股辅助\stock-quant-system"
 
 # ---------- 应用层(Phase4)：本地Streamlit桌面应用 ----------
 & $venv -m streamlit run app.py     # 启动后浏览器访问 http://localhost:8501
+# 日常使用推荐直接双击项目根目录「研衡启动器.exe」，效果等价于上面这条命令(见第12节)
 # AI解释页需要在 .env 里配置 DASHSCOPE_API_KEY=xxx（阿里云百炼 https://bailian.console.aliyun.com/）
-# 未配置时该页面自动降级为仅展示结构化数据，其余三个页面不受影响
+# 未配置时该页面自动降级为仅展示结构化数据，其余页面不受影响
 ```
 
 ## 6. Phase 0 执行结果与已知限制
@@ -402,4 +411,44 @@ cd "e:\妙妙工具\炒股辅助\stock-quant-system"
 
 **已知局限（如实记录）**：不接券商API，持仓为手动录入，无法反映真实交易滑点/费率差异；
 组合优化不含行业/风格中性化约束，assumed_IC=0.03是保守拍定值非逐日重估；LLM解释层依赖
-用户自行配置DeepSeek Key，属于外部凭据缺口不是本系统能自解的。
+用户自行配置API Key，属于外部凭据缺口不是本系统能自解的。
+
+## 12. 可用性测试通过后的UI/UX优化 + 一键启动打包（2026-08-26）
+
+人工可用性测试通过后，针对"字体偏小、缺少直观易懂的功能"两点反馈做的迭代，完整决策记录/
+测试过程见 `docs/ux-upgrade-notes.md`，代码层面：
+
+- `common/ui_theme.py` + `.streamlit/config.toml`：全局CSS放大正文/指标/表格/按钮字号，
+  统一配色主题，所有页面从`apply_theme()`一个函数入口接入，不在各页面重复写样式。
+- 建议卡片改版（`advice/advice_engine.py` 新增 `price_levels()`/`_plain_summary()`）：
+  把止盈止损百分比换算成具体人民币价格，并生成一句大白话总结，`advice_log`表新增
+  `name`/`plain_summary`/`price_levels_json`列做持久化。
+- 首页新增"今日决策速览"（`build_priority_digest()`）：读`advice_log`最近一次结果，
+  按"止损>减仓>止盈>再平衡>建仓>持有>观望"优先级排序展示，不用逐页翻找。
+- 新增3个页面：`5_行情图表.py`（K线+持仓成本/止盈止损参考线）、`6_名词解释.py`
+  （RankIC/VaR/因子等大白话术语表，与各页面❓气泡共享同一份术语数据）、
+  `7_历史建议复盘.py`（核对过去建议后续实际涨跌幅，如实标注"非严格回测"）。
+- `launcher.py` + `scripts/build_exe.py`：一键启动打包为`研衡启动器.exe`——只把启动逻辑
+  打包，不把torch/lightgbm/duckdb整体冻结进exe（工程取舍原因见开发者说明书第9a节），
+  已实测双击exe能正确拉起Streamlit并自动打开浏览器。
+
+**已知局限（如实记录）**：`历史建议复盘`是简化统计（发出日收盘价->最新收盘价涨跌幅），
+不是考虑滑点/仓位/组合效应的严格回测；exe本身不含Python依赖，仍需预先搭建好`.venv`，
+换新机器分发时需要先完成一次性环境安装，这是明确的设计取舍不是遗漏。
+
+## 13. 对照UI/UX设计理论库的第二轮复核 + 全流程边界测试（2026-08-26）
+
+对照独立设计理论库（认知负荷/Gestalt/信息图示/无障碍对比度/栅格/色彩Token/字体层级等13个
+分册）逐条核对第12节的UI实现，只改有实测证据支撑的问题，完整对照表、WCAG对比度实测数据、
+边界测试清单见 `docs/ux-upgrade-notes.md` 第6-7节。要点：
+
+- 用WCAG相对亮度公式实测发现"减仓"/"止盈"两个操作色对比度不达标（3.46:1/4.56:1贴线），
+  已调深到`#BF360C`/`#1B5E20`（5.11:1/7.00:1），其余5种操作色实测本来就达标。
+- 字号阶梯改成以正文18px为基准、公比1.25(Major Third)的Modular Scale，四级标题第一次有
+  统一可解释的比例关系（此前是四个随手取的数字）。
+- 持仓集中度图由饼图改为水平柱图（Tufte/Few"饼图超4片应改柱图"规则，direct label优于图例）。
+- 新增`common/ui_theme.py::section_header()`统一"标题+❓帮助按钮"排布，替换3处页面里各自
+  手写的`st.columns([5,1])`。
+- 全流程边界测试覆盖表单空值/非法股票代码/搜索无匹配/筛选器清空等7类场景，均已验证优雅
+  降级；顺带发现并修复一个真实bug：`历史建议复盘`页对pandas `NaN`用`or ''`兜底无效
+  （`NaN`在Python里是真值），导致缺少name的旧记录显示成字面"nan"，已用`pd.notna()`修复。

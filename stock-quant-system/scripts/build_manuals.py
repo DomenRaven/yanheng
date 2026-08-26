@@ -265,8 +265,22 @@ def build_user() -> Document:
     )
 
     doc.add_heading("3. 第一次使用", level=1)
-    doc.add_heading("3.1 启动", level=2)
-    para(doc, "在 PowerShell 中进入项目目录并启动（路径按你本机安装位置替换）：")
+    doc.add_heading("3.1 启动（推荐：双击一键启动器）", level=2)
+    para(
+        doc,
+        "项目根目录下的「研衡启动器.exe」——双击它，会自动打开一个黑色命令行窗口（用来显示后台日志，"
+        "不用管它，不要关掉），几秒到几十秒后自动打开浏览器进入系统。首次启动稍慢，属正常现象。",
+    )
+    callout(
+        doc,
+        "为什么还留着黑色命令行窗口，不能更\u201c干净\u201d一点？",
+        "本系统依赖较大的机器学习库（LightGBM、PyTorch、DuckDB），把它们全部塞进一个双击即用的"
+        "exe 会让文件膨胀到几个GB且容易出现\u201c某个库在打包后的环境里找不到\u201d的问题。启动器只负责"
+        "\u201c帮你按一次开始键\u201d，真正干活的还是项目自带、已经装好完整依赖的Python环境——这是权衡"
+        "稳定性之后的选择，不是没打包干净。",
+    )
+    doc.add_heading("3.1.1 备用方式：命令行手动启动", level=2)
+    para(doc, "如果启动器打不开（比如没有装 .venv 环境），可以在 PowerShell 中手动启动：")
     para(
         doc,
         'cd "e:\\妙妙工具\\炒股辅助\\stock-quant-system"\n'
@@ -274,7 +288,7 @@ def build_user() -> Document:
         size=10,
         color=NAVY,
     )
-    para(doc, "浏览器打开 http://localhost:8501 。左侧四个入口：持仓与建议、掘金扫描、风险仪表盘、AI 解释；首页是持仓总览。")
+    para(doc, "浏览器打开 http://localhost:8501 。左侧七个入口：持仓与建议、掘金扫描、行情图表、风险仪表盘、AI 解释、历史建议复盘、名词解释；首页是持仓总览 + 今日决策速览。")
 
     doc.add_heading("3.2 可选：配置 AI 解释", level=2)
     para(
@@ -303,6 +317,13 @@ def build_user() -> Document:
     doc.add_heading("4. 页面怎么用", level=1)
     doc.add_heading("4.1 持仓驾驶舱（首页）", level=2)
     para(doc, "看持仓只数、市值合计、浮动盈亏、当前生产冠军模型编号。单票占比超过 15% 会出警告。")
+    para(
+        doc,
+        "首页新增「🎯 今日决策速览」：把最近一次在「持仓与建议」页生成的全部建议，按紧急程度"
+        "（止损 > 减仓 > 止盈 > 再平衡 > 建仓 > 持有 > 观望）自动排序，只展示最需要关注的几条，"
+        "并配一句大白话总结（比如「已经亏了9%，跌破止损线了，建议尽快考虑卖出止损」），不用逐页翻找。"
+        "这个区块读的是历史记录，不会自动重新跑模型——要看最新结果，仍需去「持仓与建议」页点刷新。",
+    )
 
     doc.add_heading("4.2 持仓与建议", level=2)
     para(
@@ -324,6 +345,35 @@ def build_user() -> Document:
         ],
     )
     para(doc, "每张卡片都有：理由（模型/因子/持仓）、风险提示、失效条件、免责声明。展开后请把四段都读完再决定是否去券商 App 操作。")
+    para(
+        doc,
+        "卡片上现在还会直接换算出具体价格（现价 / 成本价 / 参考止损价 / 参考止盈价），"
+        "不用自己心算「跌8%等于多少钱」——止损止盈价按你录入的加权平均成本价 × (1 ± 8%) 计算，"
+        "和训练模型用的标签阈值完全一致。",
+    )
+
+    doc.add_heading("4.1a 行情图表（新增）", level=2)
+    para(
+        doc,
+        "输入股票代码可以看到 K 线图（前复权）+ 成交量。若这只股票在你的持仓里，图上会自动画出三条虚线：" 
+        "持仓成本价、参考止损价、参考止盈价，可以直接对照现价的位置判断，比读文字/百分比更直观。",
+    )
+
+    doc.add_heading("4.1b 历史建议复盘（新增）", level=2)
+    para(
+        doc,
+        "累计使用一段时间后，这页会把过去系统发出的每条建议和「发出当天收盘价 → 最新收盘价」的涨跌幅"
+        "放在一起，标注「方向正确 / 方向不利」，用来大致核对过去的建议是否靠谱、建立对系统的信任。"
+        "如实说明：这只是简化统计（没考虑真实成交价、滑点、仓位大小），不是严格的策略回测，"
+        "更不是收益承诺；累计天数越多，参考价值越大，用了不到一周时结论仅供参考。",
+    )
+
+    doc.add_heading("4.1c 名词解释（新增）", level=2)
+    para(
+        doc,
+        "看不懂 RankIC、VaR、置信度、PSI 这些词是什么意思？这一页集中给了大白话解释，"
+        "各页面关键指标旁边的「❓」小按钮点开也是同样的内容，不用来回切页面查手册。",
+    )
 
     doc.add_heading("4.3 掘金扫描", level=2)
     para(
@@ -621,6 +671,32 @@ def build_dev() -> Document:
             ["git", "本机目录甚至可能无仓库", "企业审计默认有提交史；这是制度最大的落地缺口之一"],
         ],
     )
+
+    doc.add_heading("9a. 一键启动 exe 打包（UI优化里新增）", level=1)
+    para(
+        doc,
+        "打包脚本：python scripts/build_exe.py（需先 pip install pyinstaller，仅打包时需要，不是"
+        "运行时依赖）。产物是项目根目录下的「研衡启动器.exe」，约几MB。",
+    )
+    callout(
+        doc,
+        "工程决策：为什么不把整个应用连同 torch/lightgbm/duckdb 一起冻结成单文件exe",
+        "PyInstaller把这类含C扩展、体积巨大的库整体冻结进单文件，社区里公认容易踩两类坑："
+        "一是产物体积轻松膨胀到数GB且难以精简；二是Streamlit的静态资源、torch的动态库在frozen模式下"
+        "经常需要额外写hook才能找到，出问题后排查成本很高。因此选择更稳妥的方案：exe只承担"
+        "\u201clauncher.py\u201d这一段轻量逻辑（找项目目录→调用.venv里的python→跑streamlit→开浏览器），"
+        "真正的重依赖仍然用开发机上已经装好的.venv，效果同样是双击即用，但不需要为了"
+        "\u201c看起来更极致\u201d去冒生产稳定性的风险。这是一个明确的工程取舍，不是打包能力不足。",
+    )
+    para(
+        doc,
+        "launcher.py 逻辑：定位exe所在目录 → 检查 .venv/Scripts/python.exe 和 app.py 是否存在 → "
+        "若8501端口已被占用直接打开浏览器（避免重复启动）→ 否则用 .venv 的 python 启动"
+        "`streamlit run app.py --server.headless true` → 轮询端口最多60秒 → 打开默认浏览器。"
+        "换新机器分发时，仍需先完整走一遍第3节的环境搭建（python -m venv .venv + pip install -r "
+        "requirements.txt），exe本身不携带依赖，这是设计如此，不是遗漏。",
+    )
+    para(doc, "修改 launcher.py 后需要重新执行 python scripts/build_exe.py 才会反映到exe里；该脚本会自动清理 PyInstaller 产生的中间文件（_dist_tmp/_build_tmp），不需要手动收尾。")
 
     doc.add_heading("10. 验收报告与再生本说明书", level=1)
     para(

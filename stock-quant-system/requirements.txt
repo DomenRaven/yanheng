@@ -30,3 +30,9 @@ streamlit>=1.35.0
 plotly>=5.22.0   # 持仓/风险仪表盘图表（curl_cffi 已随 akshare 传递安装，llm/news_fetch.py 复用）
 # risk/portfolio_optimizer.py（组合优化）无新增依赖，复用已有 scipy(SLSQP求解) 与
 # scikit-learn(sklearn.covariance.LedoitWolf 协方差收缩)
+
+# ===== UI优化 + 一键启动打包（2026-08-26 起，可用性测试通过后追加） =====
+python-docx>=1.1.0   # scripts/build_manuals.py 生成用户/开发者说明书
+# pyinstaller 只在"打包exe"这一次性操作时需要，不是运行时依赖，按需安装：
+#   pip install pyinstaller
+# 然后执行：python scripts/build_exe.py

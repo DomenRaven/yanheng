@@ -386,8 +386,11 @@ CREATE TABLE IF NOT EXISTS advice_log (
     advice_id     VARCHAR NOT NULL,
     as_of         DATE NOT NULL,
     symbol        VARCHAR NOT NULL,
+    name          VARCHAR,            -- 股票简称，UI展示用，不参与任何判定逻辑
     action        VARCHAR NOT NULL,   -- watch|open|add|reduce|close|stop_loss|take_profit|rebalance
     confidence    DOUBLE,
+    plain_summary VARCHAR,            -- 大白话一句话总结，供首页「今日决策速览」直接展示
+    price_levels_json VARCHAR,        -- JSON对象：{last_close, cost_price, stop_loss_price, take_profit_price}
     reasons_json  VARCHAR,            -- JSON数组，可追溯的理由明细
     risks_json    VARCHAR,
     invalid_if_json VARCHAR,
@@ -433,6 +436,9 @@ def sidecar_parallel_active() -> bool:
 _MIGRATIONS_SQL = [
     "ALTER TABLE universe ADD COLUMN IF NOT EXISTS list_date DATE",
     "ALTER TABLE universe ADD COLUMN IF NOT EXISTS delist_date DATE",
+    "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS name VARCHAR",
+    "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS plain_summary VARCHAR",
+    "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS price_levels_json VARCHAR",
 ]
 
 

@@ -33,3 +33,10 @@ stock-quant-system/_tmp_*
 # Playwright / one-off screenshots
 .playwright-mcp/
 *.png
+
+# 打包产物：exe体积大且可由 scripts/build_exe.py 从源码重新生成，不入库
+stock-quant-system/*.exe
+stock-quant-system/_dist_tmp/
+stock-quant-system/_build_tmp/
+stock-quant-system/build/
+stock-quant-system/dist/
