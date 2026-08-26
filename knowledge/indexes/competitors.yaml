@@ -1,0 +1,72 @@
+# 竞品索引
+
+competitors:
+  - id: ths
+    name: 同花顺 / SuperMind
+    region: CN
+    segment: retail_terminal_quant
+    strengths: [traffic, data_breadth, nl_stock_screener, live_bridge]
+    docs: docs/06-竞品与行业/01-国内竞品.md
+
+  - id: eastmoney
+    name: 东方财富
+    region: CN
+    segment: retail_info_fund
+    strengths: [news, fund_ecosystem]
+    docs: docs/06-竞品与行业/01-国内竞品.md
+
+  - id: xueqiu
+    name: 雪球
+    region: CN
+    segment: community
+    strengths: [content, social_proof, sentiment]
+    docs: docs/06-竞品与行业/01-国内竞品.md
+
+  - id: joinquant
+    name: 聚宽
+    region: CN
+    segment: quant_research
+    strengths: [community, python, education]
+    docs: docs/06-竞品与行业/01-国内竞品.md
+
+  - id: ricequant
+    name: 米筐
+    region: CN
+    segment: quant_institutional_tools
+    strengths: [rqdata, optimizer, factor_stack]
+    docs: docs/06-竞品与行业/01-国内竞品.md
+
+  - id: wind
+    name: Wind
+    region: CN
+    segment: institutional_data
+    strengths: [coverage, depth]
+    docs: docs/06-竞品与行业/01-国内竞品.md
+
+  - id: bloomberg
+    name: Bloomberg Terminal + ASKB
+    region: Global
+    segment: institutional_terminal
+    strengths: [data, workflow, agentic_ai]
+    docs: docs/06-竞品与行业/02-国际竞品.md
+
+  - id: factset
+    name: FactSet Quant
+    region: Global
+    segment: institutional_quant
+    strengths: [quant_workflow, datasets]
+    docs: docs/06-竞品与行业/02-国际竞品.md
+
+  - id: quantconnect
+    name: QuantConnect
+    region: Global
+    segment: algo_platform
+    strengths: [lean_engine, research_live, ai_assist]
+    docs: docs/06-竞品与行业/02-国际竞品.md
+
+  - id: tradingview
+    name: TradingView
+    region: Global
+    segment: charting_community
+    strengths: [ux_charts, scripts]
+    docs: docs/06-竞品与行业/02-国际竞品.md

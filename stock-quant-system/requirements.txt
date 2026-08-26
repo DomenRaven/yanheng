@@ -1,0 +1,32 @@
+# ===== Phase 0: 全市场数据底座 =====
+akshare>=1.14.0
+duckdb>=1.0.0
+pandas>=2.2.0
+numpy>=1.26.0
+requests>=2.31.0
+tqdm>=4.66.0
+PyYAML>=6.0
+python-dateutil>=2.9.0
+tushare>=1.4.0  # 2026-08-25 起：付费2000积分档，补齐复权因子/退市股行情/指数历史成分/停复牌等缺口
+
+# ===== Phase 1: 因子研究 + LightGBM（2026-08-26 起启用） =====
+pandas-ta>=0.3.14b0
+lightgbm>=4.3.0
+scikit-learn>=1.4.0
+scipy>=1.12.0
+statsmodels>=0.14.0
+pyarrow>=17.0.0   # 特征面板落地为 parquet（research/panel.py）
+
+# ===== Phase 2: MLOps / 行为金融（2026-08-26 起启用，无新增依赖，复用pandas/numpy/scipy） =====
+# mlops/retrain_schedule.py, mlops/drift_monitor.py, behavior/*.py
+
+# ===== Phase 3: 深度学习挑战者（2026-08-26 起启用，笔记本RTX4060 8GB显存，需用cu124索引安装） =====
+# 安装命令（不能用默认pip源，会装CPU版）：
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+torch>=2.6.0
+
+# ===== Phase 4: 应用层（2026-08-26 起启用） =====
+streamlit>=1.35.0
+plotly>=5.22.0   # 持仓/风险仪表盘图表（curl_cffi 已随 akshare 传递安装，llm/news_fetch.py 复用）
+# risk/portfolio_optimizer.py（组合优化）无新增依赖，复用已有 scipy(SLSQP求解) 与
+# scikit-learn(sklearn.covariance.LedoitWolf 协方差收缩)

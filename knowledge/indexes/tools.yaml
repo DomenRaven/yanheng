@@ -1,0 +1,81 @@
+# 工具与平台索引
+
+tools:
+  - id: vectorbt
+    type: backtest
+    license: oss
+    stage: research
+    url: https://vectorbt.dev/
+    docs: docs/05-工具库/01-开源框架.md
+
+  - id: backtrader
+    type: backtest
+    license: oss
+    stage: prototype
+    url: https://www.backtrader.com/
+    docs: docs/05-工具库/01-开源框架.md
+
+  - id: qlib
+    type: ai_quant_platform
+    license: oss
+    stage: research_to_pipeline
+    url: https://github.com/microsoft/qlib
+    docs: docs/05-工具库/01-开源框架.md
+
+  - id: quantconnect_lean
+    type: research_live
+    license: oss_core
+    stage: full_cycle
+    url: https://quantconnect.com/
+    docs: docs/05-工具库/01-开源框架.md
+
+  - id: joinquant
+    type: platform_cn
+    license: commercial_freemium
+    stage: research
+    url: https://www.joinquant.com/
+    docs: docs/06-竞品与行业/01-国内竞品.md
+
+  - id: ricequant
+    type: platform_cn
+    license: commercial
+    stage: institutional
+    url: https://www.ricequant.com/
+    docs: docs/06-竞品与行业/01-国内竞品.md
+
+  - id: supermind
+    type: platform_cn
+    license: commercial
+    stage: research_live
+    url: https://quant.10jqka.com.cn/
+    docs: docs/06-竞品与行业/01-国内竞品.md
+
+  - id: akshare
+    type: data
+    license: oss
+    stage: prototype
+    docs: docs/05-工具库/02-数据源.md
+
+  - id: tushare
+    type: data
+    license: freemium
+    stage: prototype_to_prod
+    docs: docs/05-工具库/02-数据源.md
+
+  - id: cvxpy
+    type: optimization
+    license: oss
+    stage: prod_capable
+    docs: docs/03-量化方法/04-组合优化.md
+
+  - id: lightgbm
+    type: ml
+    license: oss
+    stage: prod_capable
+    docs: docs/03-量化方法/03-机器学习与深度学习.md
+
+  - id: alphalens
+    type: factor_analysis
+    license: oss
+    stage: research
+    docs: docs/05-工具库/01-开源框架.md

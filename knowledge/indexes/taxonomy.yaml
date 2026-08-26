@@ -1,0 +1,209 @@
+# 分析维度与概念分类索引
+
+dimensions:
+  - id: macro
+    name_zh: 宏观面
+    peers: [industry, company_fundamental, technical, microstructure, theme, quant, behavioral, game]
+
+  - id: industry
+    name_zh: 产业面
+    docs: docs/01-基础概念/05-产业面与行业分析.md
+    children: [industry_chain, prosperity, competition, policy, penetration, cycle_stage]
+
+  - id: company_fundamental
+    name_zh: 公司基本面
+    docs: docs/01-基础概念/03-基本面分析.md
+
+  - id: theme
+    name_zh: 概念题材面
+    docs: docs/01-基础概念/06-概念题材与主题投资.md
+    children: [lifecycle, crowding, event_driven, narrative]
+
+  - id: technical
+    name_zh: 技术面
+    docs: docs/01-基础概念/04-技术分析.md
+    children_docs:
+      - docs/08-量价与技术指标/01-成交量与量价关系.md
+      - docs/08-量价与技术指标/02-摆动类指标.md
+      - docs/08-量价与技术指标/03-趋势与偏离类指标.md
+
+  - id: microstructure
+    name_zh: 交易与市场盘口
+    docs: docs/01-基础概念/07-市场盘口与交易微观结构.md
+    children: [order_book, tape, iceberg, dark_pool, grey_market_hk, spoofing_wash_trade]
+
+  - id: behavioral
+    name_zh: 心理学/行为面
+    docs:
+      - docs/02-经典理论/01-有效市场与行为金融.md
+      - docs/02-经典理论/05-交易心理学专论.md
+
+  - id: game
+    name_zh: 博弈面
+    docs: docs/02-经典理论/06-市场博弈与信息不对称.md
+
+  - id: quant
+    name_zh: 量化方法面
+    docs: docs/03-量化方法/00-量化交易总览.md
+    children_docs:
+      - docs/03-量化方法/06-统计套利与配对交易.md
+      - docs/03-量化方法/07-事件驱动策略.md
+      - docs/03-量化方法/08-执行算法与做市.md
+      - docs/03-量化方法/09-另类数据与情绪NLP.md
+      - docs/03-量化方法/10-时序验证与标签工程.md
+      - docs/03-量化方法/11-深度学习前沿架构详解.md
+      - docs/03-量化方法/12-强化学习与决策类方法.md
+      - docs/03-量化方法/13-生成式与Agent前沿.md
+      - docs/03-量化方法/14-量化MLOps与模型生命周期.md
+
+  - id: valuation
+    name_zh: 估值与财务分析面
+    peers: [industry, company_fundamental, technical, microstructure, theme, quant, behavioral, game, macro_cycle, derivatives, investment_style]
+    children_docs:
+      - docs/12-估值与财务分析深度/01-绝对估值-DCF与DDM.md
+      - docs/12-估值与财务分析深度/02-相对估值与可比公司法.md
+      - docs/12-估值与财务分析深度/03-EVA与护城河财务验证.md
+      - docs/12-估值与财务分析深度/04-杜邦分析与财务报表深度.md
+      - docs/12-估值与财务分析深度/05-财务造假识别与红旗清单.md
+
+  - id: derivatives
+    name_zh: 衍生品与对冲面
+    peers: [industry, company_fundamental, technical, microstructure, theme, quant, behavioral, game, macro_cycle, valuation, investment_style]
+    children_docs:
+      - docs/10-衍生品与对冲工具/01-期权基础与希腊字母.md
+      - docs/10-衍生品与对冲工具/02-期货与股指衍生品.md
+      - docs/10-衍生品与对冲工具/03-可转债.md
+      - docs/10-衍生品与对冲工具/04-融资融券.md
+      - docs/10-衍生品与对冲工具/05-ETF与套利机制.md
+
+  - id: macro_cycle
+    name_zh: 宏观周期与大类资产面
+    peers: [industry, company_fundamental, technical, microstructure, theme, quant, behavioral, game, valuation, derivatives, investment_style]
+    children_docs:
+      - docs/11-宏观与大类资产配置/01-美林时钟与经济周期.md
+      - docs/11-宏观与大类资产配置/02-利率流动性与信用周期.md
+      - docs/11-宏观与大类资产配置/03-风险平价与全天候策略.md
+      - docs/11-宏观与大类资产配置/04-大类资产配置实务.md
+
+  - id: investment_style
+    name_zh: 投资流派面
+    peers: [industry, company_fundamental, technical, microstructure, theme, quant, behavioral, game, valuation, derivatives, macro_cycle]
+    docs: docs/13-投资流派与策略体系/01-主要投资流派总览.md
+    children_docs:
+      - docs/13-投资流派与策略体系/02-价值成长与GARP.md
+      - docs/13-投资流派与策略体系/03-趋势CTA与宏观对冲.md
+
+  - id: technical_theory
+    name_zh: 经典技术结构理论
+    docs: docs/08-量价与技术指标/05-道氏波浪江恩缠论与周期理论.md
+    children_docs:
+      - docs/08-量价与技术指标/04-K线形态学.md
+      - docs/08-量价与技术指标/06-筹码分布与成本理论.md
+
+  - id: institutional_deepening
+    name_zh: A股制度深化
+    docs: docs/01-基础概念/08-A股交易制度深化.md
+    children: [registration_system, delisting, beijing_exchange, ipo_subscription, price_limit_tiers]
+
+indicator_families:
+  - id: volume
+    items: [Volume, Amount, Turnover, VolumeRatio, OBV, VWAP]
+  - id: oscillator
+    items: [KDJ, RSI, WR, CCI, Stochastic]
+  - id: trend
+    items: [MA, EMA, MACD, DMI, ADX, SAR]
+  - id: deviation
+    items: [BIAS, Bollinger, CCI]
+
+performance_metrics:
+  - id: mdd
+    name: MaxDrawdown
+    docs: docs/04-风险管理/05-绩效指标族.md
+  - id: volatility
+    name: Volatility
+    docs: docs/04-风险管理/05-绩效指标族.md
+  - id: sharpe
+    name: Sharpe
+    peers: [Sortino, Calmar, InformationRatio]
+    docs: docs/04-风险管理/05-绩效指标族.md
+
+portfolio_ops:
+  - id: rebalance
+    name_zh: 调仓与再平衡
+    docs: docs/04-风险管理/06-调仓与再平衡.md
+
+risk_deepening:
+  - id: stress_test
+    name_zh: 压力测试与情景分析
+    docs: docs/04-风险管理/07-压力测试与情景分析.md
+  - id: liquidity_credit_risk
+    name_zh: 流动性风险与信用风险
+    docs: docs/04-风险管理/08-流动性风险与信用风险.md
+  - id: leverage_margin
+    name_zh: 杠杆与保证金管理
+    docs: docs/04-风险管理/09-杠杆与保证金管理.md
+
+valuation_methods:
+  - id: dcf_ddm
+    name: DCF / DDM（绝对估值）
+    docs: docs/12-估值与财务分析深度/01-绝对估值-DCF与DDM.md
+  - id: comparable
+    name: 可比公司法 / PE-PB-EV-EBITDA（相对估值）
+    docs: docs/12-估值与财务分析深度/02-相对估值与可比公司法.md
+  - id: eva_epv
+    name: EVA / EPV（护城河财务验证）
+    docs: docs/12-估值与财务分析深度/03-EVA与护城河财务验证.md
+
+derivatives_instruments:
+  - id: option
+    name: 期权与希腊字母
+    docs: docs/10-衍生品与对冲工具/01-期权基础与希腊字母.md
+  - id: futures
+    name: 期货与股指衍生品
+    docs: docs/10-衍生品与对冲工具/02-期货与股指衍生品.md
+  - id: convertible_bond
+    name: 可转债
+    docs: docs/10-衍生品与对冲工具/03-可转债.md
+  - id: margin_trading
+    name: 融资融券
+    docs: docs/10-衍生品与对冲工具/04-融资融券.md
+  - id: etf_arbitrage
+    name: ETF套利
+    docs: docs/10-衍生品与对冲工具/05-ETF与套利机制.md
+
+macro_allocation_frameworks:
+  - id: merrill_clock
+    name: 美林时钟
+    docs: docs/11-宏观与大类资产配置/01-美林时钟与经济周期.md
+  - id: risk_parity_all_weather
+    name: 风险平价 / 全天候策略
+    docs: docs/11-宏观与大类资产配置/03-风险平价与全天候策略.md
+
+quant_deepening:
+  - id: stat_arb
+    name: 统计套利 / 配对交易
+    docs: docs/03-量化方法/06-统计套利与配对交易.md
+  - id: event_driven
+    name: 事件驱动策略
+    docs: docs/03-量化方法/07-事件驱动策略.md
+  - id: execution_algo
+    name: 执行算法（TWAP/VWAP/POV/IS）
+    docs: docs/03-量化方法/08-执行算法与做市.md
+  - id: alt_data_nlp
+    name: 另类数据与情绪NLP
+    docs: docs/03-量化方法/09-另类数据与情绪NLP.md
+  - id: ml_validation
+    name: 时序验证与标签工程（Purged K-Fold/三重障碍/元标签）
+    docs: docs/03-量化方法/10-时序验证与标签工程.md
+  - id: dl_architecture
+    name: 深度学习前沿架构（TFT/PatchTST/GNN）
+    docs: docs/03-量化方法/11-深度学习前沿架构详解.md
+  - id: rl_decision
+    name: 强化学习与决策类方法
+    docs: docs/03-量化方法/12-强化学习与决策类方法.md
+  - id: generative_agent
+    name: 生成式模型与LLM多智能体
+    docs: docs/03-量化方法/13-生成式与Agent前沿.md
+  - id: quant_mlops
+    name: 量化MLOps与模型生命周期
+    docs: docs/03-量化方法/14-量化MLOps与模型生命周期.md

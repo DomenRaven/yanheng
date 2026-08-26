@@ -1,0 +1,35 @@
+# Local / secrets
+.env
+.env.*
+secrets/
+*.key
+credentials*
+.cursor/mcp.json
+
+# Python
+__pycache__/
+.venv/
+venv/
+*.pyc
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Warehouse and bulky artifacts (rebuilt by pipeline / panel)
+stock-quant-system/data/*.duckdb
+stock-quant-system/data/*.duckdb.wal
+stock-quant-system/data/*.parquet
+stock-quant-system/logs/
+stock-quant-system/mlops/registry/*
+!stock-quant-system/mlops/registry/.gitkeep
+!stock-quant-system/mlops/registry/champion.json
+!stock-quant-system/mlops/registry/promotion_log.jsonl
+stock-quant-system/_tmp_*
+*.checkpoint*
+
+# Playwright / one-off screenshots
+.playwright-mcp/
+*.png

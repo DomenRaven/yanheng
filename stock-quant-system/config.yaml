@@ -1,0 +1,58 @@
+# ============================================================
+# 个人量化研究系统 - 全局配置
+# 对应计划文档: 个人炒股辅助本地应用_76077b1a.plan.md
+# ============================================================
+
+# ---------- 数据存储 ----------
+storage:
+  duckdb_path: "data/warehouse.duckdb"
+
+# ---------- 数据抓取 ----------
+ingestion:
+  # 数据源优先级：新浪财经接口(sina)在当前网络环境下最稳定；
+  # 东方财富(eastmoney)部分接口在存在本地代理/VPN时可能出现间歇性 502/连接重置，
+  # 因此设为 fallback，仅在 sina 缺字段时按需启用。
+  primary_source: sina
+  fallback_source: eastmoney
+
+  # 历史行情回补起始日期（近 10 年，覆盖多个牛熊周期，满足 Walk-Forward 验证的样本量要求）
+  history_start_date: "20150101"
+
+  # 复权方式：前复权，便于技术指标和收益率计算的连续性
+  adjust: "qfq"
+
+  retry:
+    max_attempts: 5
+    base_delay_seconds: 2.0
+    max_delay_seconds: 60.0
+    jitter_seconds: 1.0
+
+  rate_limit:
+    # 单只股票请求之间的最小间隔（秒），避免触发数据源反爬限制
+    min_interval_seconds: 0.35
+    max_interval_seconds: 0.8
+
+  # 每批次处理多少只股票后，写一次 checkpoint（支持断点续传）
+  checkpoint_batch_size: 50
+
+# ---------- 股票池过滤 ----------
+universe:
+  exclude_st: false          # 数据层不过滤 ST，保留标记，交由策略层决定是否排除
+  exclude_delisted: true      # 已确认退市的不再拉取新数据（历史数据仍保留）
+  include_boards:
+    - main                    # 沪深主板
+    - gem                     # 创业板
+    - star                    # 科创板
+    - bse                     # 北交所
+
+# ---------- 模型训练与生命周期（Phase 1+ 使用，先占位） ----------
+model:
+  retrain_cadence: weekly     # 已与用户确认：每周末重训
+  registry_dir: "mlops/registry"
+
+# ---------- LLM 解释层 ----------
+# 默认通义千问（阿里云百炼 DashScope，OpenAI 兼容接口）。可改为 deepseek。
+llm:
+  provider: dashscope
+  api_key_env: "DASHSCOPE_API_KEY"
+  model: qwen-plus

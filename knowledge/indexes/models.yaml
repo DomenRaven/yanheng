@@ -1,0 +1,304 @@
+# 模型与方法索引
+
+机器可读目录。`maturity`: high | medium | research。
+
+models:
+  - id: capm
+    name: CAPM
+    category: asset_pricing
+    maturity: high
+    docs: docs/02-经典理论/03-CAPM-APT-FamaFrench.md
+
+  - id: fama_french_3_5
+    name: Fama-French 3/5 Factor
+    category: asset_pricing
+    maturity: high
+    docs: docs/02-经典理论/03-CAPM-APT-FamaFrench.md
+
+  - id: apt
+    name: Arbitrage Pricing Theory
+    category: asset_pricing
+    maturity: high
+    docs: docs/02-经典理论/03-CAPM-APT-FamaFrench.md
+
+  - id: markowitz_mpt
+    name: Mean-Variance Portfolio Theory
+    category: portfolio
+    maturity: high
+    docs: docs/02-经典理论/02-现代投资组合理论.md
+
+  - id: black_litterman
+    name: Black-Litterman
+    category: portfolio
+    maturity: medium_high
+    docs: docs/03-量化方法/04-组合优化.md
+
+  - id: barra_risk
+    name: Barra-like Factor Risk Model
+    category: risk
+    maturity: high
+    docs: docs/03-量化方法/01-多因子与Barra.md
+
+  - id: garch
+    name: GARCH Family
+    category: time_series
+    maturity: high
+    docs: docs/03-量化方法/02-统计与时间序列.md
+
+  - id: var_cvar
+    name: VaR / CVaR
+    category: risk
+    maturity: high
+    docs: docs/04-风险管理/01-VaR与CVaR.md
+
+  - id: kelly
+    name: Kelly / Fractional Kelly
+    category: sizing
+    maturity: high
+    docs: docs/04-风险管理/02-仓位与资金管理.md
+
+  - id: lightgbm_alpha
+    name: GBDT Stock Ranking
+    category: ml
+    maturity: high
+    docs: docs/03-量化方法/03-机器学习与深度学习.md
+
+  - id: lstm_forecast
+    name: LSTM/GRU Forecasting
+    category: dl
+    maturity: medium
+    docs: docs/03-量化方法/03-机器学习与深度学习.md
+
+  - id: transformer_finance
+    name: Financial Transformers
+    category: dl
+    maturity: medium
+    docs: docs/03-量化方法/03-机器学习与深度学习.md
+
+  - id: gnn_stock
+    name: Stock Graph Neural Nets
+    category: dl
+    maturity: research
+    docs: docs/03-量化方法/03-机器学习与深度学习.md
+
+  - id: llm_alpha
+    name: LLM Formulaic Alpha / Research Agents
+    category: ai
+    maturity: research
+    docs: docs/03-量化方法/03-机器学习与深度学习.md
+
+  - id: risk_parity
+    name: Risk Parity
+    category: portfolio
+    maturity: high
+    docs: docs/03-量化方法/04-组合优化.md
+
+  - id: hmm_regime
+    name: HMM Regime Switching
+    category: time_series
+    maturity: medium_high
+    docs: docs/03-量化方法/02-统计与时间序列.md
+
+  - id: relative_strength
+    name: Relative Strength vs Benchmark
+    category: technical_factor
+    maturity: high
+    docs: docs/09-场景决策案例/01-逆市抗跌与相对强弱.md
+
+  - id: sharpe_sortino_calmar
+    name: Risk-Adjusted Performance Ratios
+    category: performance
+    maturity: high
+    docs: docs/04-风险管理/05-绩效指标族.md
+
+  - id: microstructure_order_flow
+    name: Order Flow / Microstructure Hypotheses
+    category: microstructure
+    maturity: medium
+    docs: docs/01-基础概念/07-市场盘口与交易微观结构.md
+
+  - id: theme_lifecycle
+    name: Thematic Narrative Lifecycle
+    category: theme
+    maturity: medium_high
+    docs: docs/01-基础概念/06-概念题材与主题投资.md
+
+  - id: dcf
+    name: Discounted Cash Flow
+    category: valuation
+    maturity: high
+    docs: docs/12-估值与财务分析深度/01-绝对估值-DCF与DDM.md
+
+  - id: ddm
+    name: Dividend Discount Model
+    category: valuation
+    maturity: high
+    docs: docs/12-估值与财务分析深度/01-绝对估值-DCF与DDM.md
+
+  - id: comparable_valuation
+    name: Comparable Company Analysis (PE/PB/EV-EBITDA/PEG)
+    category: valuation
+    maturity: high
+    docs: docs/12-估值与财务分析深度/02-相对估值与可比公司法.md
+
+  - id: eva_epv
+    name: EVA / EPV Moat Verification
+    category: valuation
+    maturity: medium_high
+    docs: docs/12-估值与财务分析深度/03-EVA与护城河财务验证.md
+
+  - id: dupont
+    name: DuPont Analysis
+    category: fundamental
+    maturity: high
+    docs: docs/12-估值与财务分析深度/04-杜邦分析与财务报表深度.md
+
+  - id: fraud_red_flags
+    name: Financial Fraud Red-Flag Checklist
+    category: fundamental_risk
+    maturity: medium
+    docs: docs/12-估值与财务分析深度/05-财务造假识别与红旗清单.md
+
+  - id: dow_elliott_gann_chan
+    name: Dow Theory / Elliott Wave / Gann / Chan Theory
+    category: technical_theory
+    maturity: medium
+    docs: docs/08-量价与技术指标/05-道氏波浪江恩缠论与周期理论.md
+
+  - id: chip_distribution
+    name: Chip Distribution (Cost Basis Model)
+    category: technical_theory
+    maturity: medium
+    docs: docs/08-量价与技术指标/06-筹码分布与成本理论.md
+
+  - id: option_greeks
+    name: Option Pricing & Greeks (Black-Scholes)
+    category: derivatives
+    maturity: high
+    docs: docs/10-衍生品与对冲工具/01-期权基础与希腊字母.md
+
+  - id: index_futures_arbitrage
+    name: Index Futures Cash-and-Carry Arbitrage
+    category: derivatives
+    maturity: high
+    docs: docs/10-衍生品与对冲工具/02-期货与股指衍生品.md
+
+  - id: convertible_bond_arbitrage
+    name: Convertible Bond Premium Arbitrage
+    category: derivatives
+    maturity: medium_high
+    docs: docs/10-衍生品与对冲工具/03-可转债.md
+
+  - id: etf_premium_discount_arbitrage
+    name: ETF Premium/Discount Arbitrage
+    category: derivatives
+    maturity: high
+    docs: docs/10-衍生品与对冲工具/05-ETF与套利机制.md
+
+  - id: merrill_clock
+    name: Merrill Investment Clock
+    category: macro_allocation
+    maturity: medium
+    docs: docs/11-宏观与大类资产配置/01-美林时钟与经济周期.md
+
+  - id: all_weather_risk_parity
+    name: All Weather / Risk Parity Allocation
+    category: macro_allocation
+    maturity: high
+    docs: docs/11-宏观与大类资产配置/03-风险平价与全天候策略.md
+
+  - id: pairs_trading_cointegration
+    name: Pairs Trading via Cointegration / PCA Residual
+    category: stat_arb
+    maturity: high
+    docs: docs/03-量化方法/06-统计套利与配对交易.md
+
+  - id: event_study_pead
+    name: Event Study / Post-Earnings Announcement Drift
+    category: event_driven
+    maturity: high
+    docs: docs/03-量化方法/07-事件驱动策略.md
+
+  - id: execution_twap_vwap_pov_is
+    name: TWAP / VWAP / POV / Implementation Shortfall
+    category: execution
+    maturity: high
+    docs: docs/03-量化方法/08-执行算法与做市.md
+
+  - id: sentiment_nlp
+    name: Financial Text Sentiment / Alt-Data NLP
+    category: alt_data
+    maturity: medium
+    docs: docs/03-量化方法/09-另类数据与情绪NLP.md
+
+  - id: stress_testing_scenario
+    name: Stress Testing / Scenario Analysis
+    category: risk
+    maturity: high
+    docs: docs/04-风险管理/07-压力测试与情景分析.md
+
+  - id: liquidity_credit_risk_metrics
+    name: Liquidity & Credit Risk Proxies
+    category: risk
+    maturity: medium_high
+    docs: docs/04-风险管理/08-流动性风险与信用风险.md
+
+  - id: margin_maintenance_ratio
+    name: Margin Maintenance Ratio / Leverage Management
+    category: risk
+    maturity: high
+    docs: docs/04-风险管理/09-杠杆与保证金管理.md
+
+  - id: investment_style_taxonomy
+    name: Investment Style Taxonomy (Value/Growth/GARP/CTA/Macro)
+    category: strategy
+    maturity: high
+    docs: docs/13-投资流派与策略体系/01-主要投资流派总览.md
+
+  - id: purged_kfold_embargo
+    name: Purged K-Fold CV + Embargo
+    category: ml_validation
+    maturity: high
+    docs: docs/03-量化方法/10-时序验证与标签工程.md
+
+  - id: triple_barrier_meta_labeling
+    name: Triple Barrier Labeling + Meta-Labeling
+    category: ml_validation
+    maturity: high
+    docs: docs/03-量化方法/10-时序验证与标签工程.md
+
+  - id: tft_patchtst_nbeats
+    name: TFT / PatchTST / N-BEATS / Informer Family
+    category: dl
+    maturity: medium
+    docs: docs/03-量化方法/11-深度学习前沿架构详解.md
+
+  - id: gat_stock_relation
+    name: GAT / GATs_ts / RSR Stock Relation Modeling
+    category: dl
+    maturity: medium_high
+    docs: docs/03-量化方法/11-深度学习前沿架构详解.md
+
+  - id: rl_trading_ppo_dqn
+    name: RL for Trading (PPO/DQN/Decision Transformer)
+    category: rl
+    maturity: research
+    docs: docs/03-量化方法/12-强化学习与决策类方法.md
+
+  - id: diffusion_market_simulation
+    name: Diffusion-based Market Generation (DigMA-style)
+    category: generative
+    maturity: research
+    docs: docs/03-量化方法/13-生成式与Agent前沿.md
+
+  - id: llm_multi_agent_research
+    name: LLM Multi-Agent Investment Research (R&D-Agent-Quant / TradingAgents style)
+    category: ai
+    maturity: research
+    docs: docs/03-量化方法/13-生成式与Agent前沿.md
+
+  - id: quant_mlops_feature_store
+    name: Quant MLOps (Feature Store / Model Registry / Drift Monitor)
+    category: engineering
+    maturity: high
+    docs: docs/03-量化方法/14-量化MLOps与模型生命周期.md

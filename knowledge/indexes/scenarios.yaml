@@ -1,0 +1,75 @@
+# 场景动作枚举（建议引擎）
+
+actions:
+  - id: watch
+    name_zh: 观望
+    priority_hint: high_when_conflict_or_risk
+
+  - id: open
+    name_zh: 建仓
+    requires: [signal_positive, risk_budget, tradable]
+
+  - id: add
+    name_zh: 加仓
+    requires: [existing_position, thesis_intact, risk_budget]
+    anti_patterns: [add_only_because_of_loss]
+
+  - id: reduce
+    name_zh: 减仓
+    triggers: [target_reached, risk_breach, thesis_decay, rebalance]
+
+  - id: close
+    name_zh: 清仓
+    triggers: [stop_loss, thesis_invalid, hard_risk_limit]
+
+  - id: stop_loss
+    name_zh: 止损
+    note: 规则优先于主观成本锚定
+
+  - id: take_profit
+    name_zh: 止盈
+    note: 可与移动止损结合
+
+  - id: rebalance
+    name_zh: 再平衡
+    note: 组合层动作，不一定对应看空个股
+
+scenarios:
+  - id: empty_strong_signal
+    account: flat
+    advice_bias: open_scaled
+
+  - id: profit_runup
+    account: profitable
+    advice_bias: trail_or_partial_take
+
+  - id: loss_averaging_temptation
+    account: losing
+    advice_bias: validate_thesis_else_stop
+
+  - id: signal_conflict
+    account: any
+    advice_bias: watch_explain_conflict
+
+  - id: high_vol_regime
+    market: high_vol
+    advice_bias: cut_size_raise_cash
+
+  - id: limit_up_unfillable
+    microstructure: limit_up
+    advice_bias: no_chase_gap_risk
+
+  - id: market_down_stock_up
+    name_zh: 大盘跌个股抗跌
+    docs: docs/09-场景决策案例/01-逆市抗跌与相对强弱.md
+    advice_bias: check_rs_and_thesis_then_hold_or_trim
+
+  - id: theme_catalyst_hot
+    name_zh: 题材催化或科技成果火热
+    docs: docs/09-场景决策案例/02-题材催化与科技成果.md
+    advice_bias: lifecycle_and_crowding_gate
+
+  - id: large_buy_small_sell
+    name_zh: 大单买小单卖盘口异象
+    docs: docs/09-场景决策案例/03-大单小单与可疑盘口.md
+    advice_bias: multi_hypothesis_low_confidence_no_chase
