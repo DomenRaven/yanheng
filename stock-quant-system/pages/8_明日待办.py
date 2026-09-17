@@ -7,7 +7,7 @@ import streamlit as st
 
 from advice.advice_engine import load_latest_advice_cards
 from advice.entry_rules import build_tomorrow_todos
-from common.ui_theme import action_meta, apply_theme, connect_warehouse, render_trust_footer, section_header
+from common.ui_theme import action_meta, apply_theme, connect_warehouse, close_warehouse, section_header
 
 apply_theme(page_title="明日待办", page_icon="📋")
 st.title("📋 明日待办")
@@ -52,5 +52,4 @@ try:
             "- 不等于自动下单；模拟成交请在「持仓与建议 → 本机模拟盘」操作。"
         )
 finally:
-    render_trust_footer(conn)
-    conn.close()
+    close_warehouse(conn)

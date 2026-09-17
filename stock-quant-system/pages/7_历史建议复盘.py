@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from common.db import is_read_only
-from common.ui_theme import action_meta, apply_theme, connect_warehouse, render_trust_footer, section_header
+from common.ui_theme import action_meta, apply_theme, connect_warehouse, close_warehouse, section_header
 
 apply_theme(page_title="历史建议复盘", page_icon="🕰️")
 st.title("🕰️ 历史建议复盘")
@@ -230,5 +230,4 @@ try:
                     st.error(r.reject_reason or "拒绝")
                 st.rerun()
 finally:
-    render_trust_footer(conn)
-    conn.close()
+    close_warehouse(conn)

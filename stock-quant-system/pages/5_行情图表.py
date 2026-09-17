@@ -16,7 +16,7 @@ from plotly.subplots import make_subplots
 
 from advice.advice_engine import price_levels as _compute_price_levels
 from common.symbol_lookup import render_symbol_picker
-from common.ui_theme import apply_theme, connect_warehouse, term_help
+from common.ui_theme import apply_theme, connect_warehouse, close_warehouse, term_help
 from risk.portfolio_risk import load_open_positions
 
 apply_theme(page_title="行情图表", page_icon="📊")
@@ -110,7 +110,7 @@ if symbol:
             with help_col2:
                 term_help("因子", custom_text="K线只反映价格走势本身，模型打分/因子分析请前往「掘金扫描」「AI解释」页面查看。")
     finally:
-        conn.close()
+        close_warehouse(conn)
 else:
     st.info("请输入代码或公司名称查看K线图。")
-    conn.close()
+    close_warehouse(conn)

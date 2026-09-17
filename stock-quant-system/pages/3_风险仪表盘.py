@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from common.ui_theme import apply_theme, connect_warehouse, section_header, term_help
+from common.ui_theme import apply_theme, connect_warehouse, close_warehouse, section_header, term_help
 from risk.portfolio_risk import _canon_symbol, generate_risk_report
 
 
@@ -72,11 +72,8 @@ st.caption(
 )
 
 conn = connect_warehouse()
-try:
-    today = dt.date.today().strftime("%Y-%m-%d")
-    report = generate_risk_report(conn, today)
-finally:
-    conn.close()
+today = dt.date.today().strftime("%Y-%m-%d")
+report = generate_risk_report(conn, today)
 
 if report.get("status") != "ok":
     st.info(report.get("status", "无数据"))
@@ -151,3 +148,5 @@ else:
         c2.metric("假设性当前回撤", f"{dd['current_drawdown']:.1%}")
     else:
         st.caption(dd.get("status", ""))
+
+close_warehouse(conn)

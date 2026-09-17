@@ -9,7 +9,7 @@ from pathlib import Path
 import streamlit as st
 
 from common.symbol_lookup import render_symbol_picker
-from common.ui_theme import apply_theme, connect_warehouse
+from common.ui_theme import apply_theme, connect_warehouse, close_warehouse
 from llm.explain_assistant import LLMNotConfiguredError, build_context_text, generate_explanation
 from llm.news_fetch import fetch_stock_news
 
@@ -28,49 +28,46 @@ symbol = render_symbol_picker(conn, key="ai_symbol")
 
 if not symbol:
     st.info("请输入代码或公司名称。")
-    conn.close()
+    close_warehouse(conn)
     st.stop()
 
-try:
-    today = dt.date.today().strftime("%Y-%m-%d")
-    code = symbol.strip()
-    row = conn.execute(
-        "SELECT symbol, name FROM universe WHERE symbol = ?", [code]
-    ).df()
-    name = row["name"].iloc[0] if not row.empty else None
+today = dt.date.today().strftime("%Y-%m-%d")
+code = symbol.strip()
+row = conn.execute(
+    "SELECT symbol, name FROM universe WHERE symbol = ?", [code]
+).df()
+name = row["name"].iloc[0] if not row.empty else None
 
-    latest_score = conn.execute(
+latest_score = conn.execute(
+    """
+    SELECT pred_score, rank, trade_date FROM prediction_log
+    WHERE symbol = ? ORDER BY trade_date DESC LIMIT 1
+    """,
+    [code],
+).df()
+pred_score = latest_score["pred_score"].iloc[0] if not latest_score.empty else None
+rank = int(latest_score["rank"].iloc[0]) if not latest_score.empty else None
+snapshot_trade_date = None
+if not latest_score.empty and "trade_date" in latest_score.columns:
+    snapshot_trade_date = str(latest_score["trade_date"].iloc[0])[:10]
+
+factor_row = None
+panel_path = Path("data/feature_panel.parquet")
+if panel_path.exists():
+    factor_row = conn.execute(
         """
-        SELECT pred_score, rank, trade_date FROM prediction_log
-        WHERE symbol = ? ORDER BY trade_date DESC LIMIT 1
+        SELECT factor_mom_12_1, factor_roe, factor_bp, factor_gross_margin
+        FROM (SELECT * FROM read_parquet('data/feature_panel.parquet')
+              WHERE symbol = ? ORDER BY trade_date DESC LIMIT 1)
         """,
         [code],
     ).df()
-    pred_score = latest_score["pred_score"].iloc[0] if not latest_score.empty else None
-    rank = int(latest_score["rank"].iloc[0]) if not latest_score.empty else None
-    snapshot_trade_date = None
-    if not latest_score.empty and "trade_date" in latest_score.columns:
-        snapshot_trade_date = str(latest_score["trade_date"].iloc[0])[:10]
+factor_snapshot = factor_row.iloc[0].to_dict() if factor_row is not None and not factor_row.empty else None
 
-    factor_row = None
-    panel_path = Path("data/feature_panel.parquet")
-    if panel_path.exists():
-        factor_row = conn.execute(
-            """
-            SELECT factor_mom_12_1, factor_roe, factor_bp, factor_gross_margin
-            FROM (SELECT * FROM read_parquet('data/feature_panel.parquet')
-                  WHERE symbol = ? ORDER BY trade_date DESC LIMIT 1)
-            """,
-            [code],
-        ).df()
-    factor_snapshot = factor_row.iloc[0].to_dict() if factor_row is not None and not factor_row.empty else None
+from behavior.chip_distribution import compute_disposition_proxy
 
-    from behavior.chip_distribution import compute_disposition_proxy
-
-    disp = compute_disposition_proxy(conn, [code], today)
-    behavior_flags = {"disposition_flag": disp["disposition_flag"].iloc[0]} if not disp.empty else None
-finally:
-    conn.close()
+disp = compute_disposition_proxy(conn, [code], today)
+behavior_flags = {"disposition_flag": disp["disposition_flag"].iloc[0]} if not disp.empty else None
 
 st.subheader(f"{symbol} {name or ''}")
 
@@ -129,3 +126,5 @@ if news_titles:
         title = str(n["title"]).replace("[", "［").replace("]", "］")
         extra = f"{n['source']} {n['publish_time']}"
         st.markdown(f"- [{title}]({n['url']}) —— {extra}")
+
+close_warehouse(conn)

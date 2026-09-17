@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from common.ui_theme import apply_theme, term_help
+from common.ui_theme import apply_theme, connect_warehouse, close_warehouse, term_help
 
 apply_theme(page_title="掘金扫描", page_icon="🔍")
 st.title("🔍 全市场掘金扫描")
@@ -47,3 +47,6 @@ if cached:
         st.dataframe(full_ranked.rename(columns=_rename), use_container_width=True, hide_index=True, height=600)
 else:
     st.info("点击上方按钮运行扫描。")
+
+_conn = connect_warehouse()
+close_warehouse(_conn)

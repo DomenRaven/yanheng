@@ -226,6 +226,12 @@ def render_trust_footer(conn) -> None:
     )
 
 
+def close_warehouse(conn) -> None:
+    """页末统一合规说明并关闭连接。"""
+    render_trust_footer(conn)
+    conn.close()
+
+
 _CSS = """
 <style>
 /* ==================================================================

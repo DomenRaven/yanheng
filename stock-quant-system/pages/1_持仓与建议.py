@@ -10,7 +10,7 @@ import streamlit as st
 from common.db import is_read_only
 from common.symbol_lookup import render_symbol_picker
 from advice.paper_broker import latest_paper_account_id
-from common.ui_theme import apply_theme, connect_warehouse, render_advice_card, render_trust_footer, section_header
+from common.ui_theme import apply_theme, connect_warehouse, render_advice_card, close_warehouse, section_header
 
 apply_theme(page_title="持仓与建议", page_icon="💼")
 st.title("💼 持仓与建议")
@@ -189,5 +189,4 @@ with st.expander("🧪 本机模拟盘（与上方手动持仓分离）", expand
                     st.error(r.reject_reason or "拒绝")
                 st.rerun()
 
-render_trust_footer(conn)
-conn.close()
+close_warehouse(conn)

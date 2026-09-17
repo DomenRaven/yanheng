@@ -18,7 +18,7 @@ import streamlit as st
 
 from advice.advice_engine import build_priority_digest, cards_for_digest, load_latest_advice_cards
 from common.symbol_lookup import render_symbol_picker
-from common.ui_theme import apply_theme, connect_warehouse, render_advice_card, render_trust_footer, section_header
+from common.ui_theme import apply_theme, connect_warehouse, render_advice_card, close_warehouse, section_header
 from risk.portfolio_risk import compute_concentration, compute_position_summary
 
 apply_theme(page_title="研衡 YanHeng · 持仓驾驶舱", page_icon="📈", layout="wide")
@@ -115,9 +115,8 @@ try:
     st.subheader("🔍 按名称查代码")
     st.caption("本地股票池检索，不联网。输入「紫金矿业」「中信证券」或 6 位代码均可。")
     render_symbol_picker(conn, key="home_lookup")
-    render_trust_footer(conn)
 finally:
-    conn.close()
+    close_warehouse(conn)
 
 st.divider()
 st.markdown(
