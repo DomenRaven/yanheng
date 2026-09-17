@@ -233,12 +233,12 @@ def sync_bse_cdr_qfq_quotes(symbols: list[str] | None = None, limit: int | None 
     return stats
 
 
-def sync_all_tushare_prices() -> dict:
+def sync_all_tushare_prices(limit: int | None = None) -> dict:
     results = {}
     logger.info("=== Tushare 复权因子 + 退市股历史行情 开始 ===")
-    results["adj_factor"] = sync_adj_factor()
-    results["delisted_daily_quotes"] = sync_delisted_daily_quotes()
-    results["bse_cdr_qfq_quotes"] = sync_bse_cdr_qfq_quotes()
+    results["adj_factor"] = sync_adj_factor(limit=limit)
+    results["delisted_daily_quotes"] = sync_delisted_daily_quotes(limit=limit)
+    results["bse_cdr_qfq_quotes"] = sync_bse_cdr_qfq_quotes(limit=limit)
     logger.info("=== Tushare 复权因子 + 退市股历史行情 完成: %s ===", results)
     return results
 

@@ -15,23 +15,22 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from advice.advice_engine import price_levels as _compute_price_levels
-from common.db import get_connection, init_schema
-from common.ui_theme import apply_theme, term_help
+from common.symbol_lookup import render_symbol_picker
+from common.ui_theme import apply_theme, connect_warehouse, term_help
 from risk.portfolio_risk import load_open_positions
 
 apply_theme(page_title="行情图表", page_icon="📊")
 st.title("📊 行情图表")
 st.caption("K线为前复权价格；若该股票在你的持仓里，会自动画出成本价、参考止损/止盈价三条虚线，方便直接对照现价判断。")
 
-conn = get_connection()
-init_schema(conn)
+conn = connect_warehouse()
 
 col1, col2 = st.columns([3, 1])
-symbol = col1.text_input("股票代码（不带交易所后缀，如 000001）", value="")
+with col1:
+    symbol = render_symbol_picker(conn, key="chart_symbol")
 lookback = col2.selectbox("显示最近多少个交易日", [60, 120, 250, 500], index=1)
 
 if symbol:
-    symbol = symbol.strip()
     try:
         info = conn.execute("SELECT symbol, name FROM universe WHERE symbol = ?", [symbol]).df()
         name = info["name"].iloc[0] if not info.empty else None
@@ -113,5 +112,5 @@ if symbol:
     finally:
         conn.close()
 else:
-    st.info("请输入股票代码查看K线图。")
+    st.info("请输入代码或公司名称查看K线图。")
     conn.close()

@@ -17,15 +17,14 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-import time
 
 import akshare as ak
 import pandas as pd
-from tqdm import tqdm
 
 from common.config import get_config
-from common.db import get_connection, init_schema
-from common.http_retry import FetchFailedError, polite_sleep, retry_on_failure
+from common.db import write_session
+from common.http_retry import FetchFailedError, retry_on_failure
+from common.parallel_fetch import map_fetch_then_write
 
 logger = logging.getLogger("ingestion.quotes_batch")
 
@@ -131,65 +130,68 @@ def _upsert_quotes(conn, df: pd.DataFrame) -> int:
 
 
 def sync_quotes_batch(symbols: list[str] | None = None, limit: int | None = None) -> dict:
+    """增量抓行情。HTTP 线程池；DuckDB 只在主线程短连接写入。"""
     cfg = get_config()["ingestion"]
     history_start = cfg["history_start_date"]
     adjust = cfg["adjust"]
     checkpoint_size = cfg.get("checkpoint_batch_size", 50)
     today_str = dt.date.today().strftime("%Y%m%d")
 
-    conn = get_connection()
-    init_schema(conn)
-
-    targets = _get_sync_targets(conn, symbols)
+    with write_session(init=True) as conn:
+        targets = _get_sync_targets(conn, symbols)
     if limit:
         targets = targets[:limit]
 
+    jobs: list[tuple[str, str, str]] = []
     stats = {"ok": 0, "skipped_up_to_date": 0, "failed": 0, "rows_written": 0, "failed_symbols": []}
-
-    for i, (symbol, exchange, last_date) in enumerate(tqdm(targets, desc="quotes_batch")):
+    for symbol, exchange, last_date in targets:
         start_date = (last_date + dt.timedelta(days=1)).strftime("%Y%m%d") if last_date else history_start
         if start_date > today_str:
             stats["skipped_up_to_date"] += 1
             continue
+        jobs.append((symbol, exchange, start_date))
 
-        try:
-            if exchange in ("sh", "sz"):
-                raw = _fetch_sina_daily(symbol, exchange, start_date, today_str, adjust)
-                norm = _normalize_sina(raw, symbol, adjust)
-            elif exchange == "bj":
-                raw = _fetch_em_hist(symbol, start_date, today_str, adjust)
-                norm = _normalize_em(raw, symbol, adjust)
-            else:
-                stats["failed"] += 1
-                stats["failed_symbols"].append(symbol)
-                continue
+    done = {"n": 0}
 
-            n = _upsert_quotes(conn, norm)
-            stats["rows_written"] += n
-            stats["ok"] += 1
-            conn.execute(
-                "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
-                ["sync_quotes_batch", symbol, "success", f"rows={n}, range={start_date}-{today_str}"],
-            )
-        except FetchFailedError as exc:
+    def fetch(job: tuple[str, str, str]) -> pd.DataFrame:
+        symbol, exchange, start_date = job
+        if exchange in ("sh", "sz"):
+            raw = _fetch_sina_daily(symbol, exchange, start_date, today_str, adjust)
+            return _normalize_sina(raw, symbol, adjust)
+        if exchange == "bj":
+            raw = _fetch_em_hist(symbol, start_date, today_str, adjust)
+            return _normalize_em(raw, symbol, adjust)
+        raise FetchFailedError(f"未知交易所 {exchange}", None)
+
+    def on_result(job: tuple[str, str, str], norm: pd.DataFrame | None, err: BaseException | None) -> None:
+        symbol, _ex, start_date = job
+        done["n"] += 1
+        if err is not None:
             stats["failed"] += 1
             stats["failed_symbols"].append(symbol)
-            conn.execute(
-                "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
-                ["sync_quotes_batch", symbol, "failed", str(exc)[:300]],
-            )
-            logger.warning("%s 抓取失败，已记录，跳过: %s", symbol, exc)
-
-        if (i + 1) % checkpoint_size == 0:
-            conn.commit() if hasattr(conn, "commit") else None
+            with write_session() as conn:
+                conn.execute(
+                    "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
+                    ["sync_quotes_batch", symbol, "failed", str(err)[:300]],
+                )
+            logger.warning("%s 抓取失败，已记录，跳过: %s", symbol, err)
+        else:
+            n = 0
+            with write_session() as conn:
+                n = _upsert_quotes(conn, norm if norm is not None else pd.DataFrame())
+                conn.execute(
+                    "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
+                    ["sync_quotes_batch", symbol, "success", f"rows={n}, range={start_date}-{today_str}"],
+                )
+            stats["rows_written"] += n
+            stats["ok"] += 1
+        if done["n"] % checkpoint_size == 0:
             logger.info(
                 "进度 %d/%d: ok=%d failed=%d rows=%d",
-                i + 1, len(targets), stats["ok"], stats["failed"], stats["rows_written"],
+                done["n"], len(jobs), stats["ok"], stats["failed"], stats["rows_written"],
             )
 
-        polite_sleep()
-
-    conn.close()
+    map_fetch_then_write(jobs, fetch, on_result, desc="quotes_batch")
     logger.info("批量行情同步完成: %s", stats)
     return stats
 

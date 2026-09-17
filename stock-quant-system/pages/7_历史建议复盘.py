@@ -9,11 +9,13 @@
 """
 from __future__ import annotations
 
+import datetime as dt
+
 import pandas as pd
 import streamlit as st
 
-from common.db import get_connection, init_schema
-from common.ui_theme import action_meta, apply_theme, section_header
+from common.db import is_read_only
+from common.ui_theme import action_meta, apply_theme, connect_warehouse, render_trust_footer, section_header
 
 apply_theme(page_title="历史建议复盘", page_icon="🕰️")
 st.title("🕰️ 历史建议复盘")
@@ -22,14 +24,23 @@ st.caption(
     "合理，不是严格的策略回测，也不构成未来收益的任何保证。"
 )
 
-conn = get_connection()
-init_schema(conn)
+conn = connect_warehouse()
 try:
     log = conn.execute(
         """
-        SELECT advice_id, as_of, symbol, name, action, confidence, plain_summary, created_at
+        SELECT advice_id, as_of, symbol, name, action, confidence, plain_summary, created_at,
+               size_shares, est_amount_cny, exec_date, max_loss_cny
         FROM advice_log
         ORDER BY as_of DESC, created_at DESC
+        """
+    ).df()
+
+    fills = conn.execute(
+        """
+        SELECT advice_id, symbol, side, shares, price, fees, trade_date, source, reject_reason
+        FROM paper_trades
+        WHERE reject_reason IS NULL
+        ORDER BY trade_date DESC
         """
     ).df()
 
@@ -121,5 +132,103 @@ try:
                     c4.markdown(f"涨跌幅：**{pct:.1%}**　{verdict}" if pd.notna(pct) else "暂无最新价")
                     if pd.notna(row.get("plain_summary")) and row.get("plain_summary"):
                         st.caption(f"当时的建议：{row['plain_summary']}")
+                    if pd.notna(row.get("size_shares")) and row.get("size_shares"):
+                        st.caption(
+                            f"当时建议股数 {int(row['size_shares'])} 股"
+                            + (
+                                f"，约 ¥{float(row['est_amount_cny']):,.0f}"
+                                if pd.notna(row.get("est_amount_cny"))
+                                else ""
+                            )
+                        )
+                    pt = fills[fills["advice_id"] == row["advice_id"]] if not fills.empty else fills
+                    if not pt.empty:
+                        f0 = pt.iloc[0]
+                        src = "模拟" if f0["source"] == "sim" else "用户确认实盘"
+                        fill_px = float(f0["price"])
+                        adv_px = float(row["price_then"]) if pd.notna(row.get("price_then")) else None
+                        px_note = ""
+                        if adv_px and adv_px > 0:
+                            diff = fill_px / adv_px - 1
+                            px_note = f" · 相对建议日收盘 {diff:+.2%}"
+                        st.success(
+                            f"已关联成交（{src}）：{f0['side']} {int(f0['shares'])} 股 "
+                            f"@ ¥{fill_px:.2f}（{f0['trade_date']}）{px_note}"
+                        )
+                    elif row["action"] in ("open", "reduce", "stop_loss", "take_profit", "rebalance"):
+                        st.caption("尚未关联 paper 成交记录。")
+
+        if not merged.empty and not fills.empty:
+            section_header("建议 vs 成交价偏差（S7 简版）", level=2)
+            joined = merged.merge(
+                fills[["advice_id", "price", "side", "source"]],
+                on="advice_id",
+                how="inner",
+            )
+            joined = joined[joined["price_then"].notna() & (joined["price_then"] > 0)]
+            if not joined.empty:
+                joined["fill_vs_advice_close"] = joined["price"] / joined["price_then"] - 1
+                st.caption(
+                    f"共 {len(joined)} 条可对比；中位偏差 "
+                    f"{joined['fill_vs_advice_close'].median():+.2%}（非策略回测口径）。"
+                )
+                st.dataframe(
+                    joined[
+                        ["as_of", "symbol", "action", "price_then", "price", "fill_vs_advice_close", "source"]
+                    ]
+                    .head(30)
+                    .rename(
+                        columns={
+                            "as_of": "建议日",
+                            "price_then": "建议日收盘",
+                            "price": "成交价",
+                            "fill_vs_advice_close": "成交/收盘-1",
+                            "source": "来源",
+                        }
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+    section_header("券商已成交？回写到模拟账本（M15）", level=2)
+    st.caption(
+        "在券商 App 手动下单后，可把实际成交价写入本机 paper 账本（source=user_confirmed_live），"
+        "便于与建议价对比；**不会**连接券商 API。"
+    )
+    readonly = is_read_only(conn)
+    from advice.paper_broker import execute_paper_order, latest_paper_account_id
+
+    aid = latest_paper_account_id(conn)
+    if not aid:
+        st.info("请先在「持仓与建议 → 本机模拟盘」创建练习账户。")
+    else:
+        with st.form("confirm_live_fill"):
+            c1, c2, c3 = st.columns(3)
+            aid_in = c1.text_input("advice_id", value="")
+            sym = c2.text_input("代码", value="")
+            side = c3.selectbox("方向", ["buy", "sell"])
+            c4, c5, c6 = st.columns(3)
+            sh = c4.number_input("股数", min_value=100, step=100, value=100)
+            px = c5.number_input("实际成交价", min_value=0.01, step=0.01, format="%.2f")
+            td = c6.date_input("成交日", value=dt.date.today())
+            if st.form_submit_button("确认写入", disabled=readonly):
+                r = execute_paper_order(
+                    aid,
+                    symbol=sym.strip(),
+                    side=side,  # type: ignore[arg-type]
+                    shares=int(sh),
+                    trade_date=td,
+                    advice_id=aid_in.strip() or None,
+                    source="user_confirmed_live",
+                    price_override=float(px),
+                )
+                if r.status == "filled":
+                    st.success(f"已记录 {r.trade_id}")
+                elif r.status == "skipped":
+                    st.warning(r.reject_reason or "已跳过")
+                else:
+                    st.error(r.reject_reason or "拒绝")
+                st.rerun()
 finally:
+    render_trust_footer(conn)
     conn.close()

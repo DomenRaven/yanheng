@@ -83,12 +83,27 @@ def compute_position_summary(conn, as_of_date: str) -> pd.DataFrame:
     return out
 
 
+def _canon_symbol(value) -> str:
+    """持仓代码规范成 6 位字符串。DuckDB/pandas 常把全数字代码读成 int（600519），
+    Plotly 会把它当连续数值轴，纵坐标出现「60万」而不是股票代码。"""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return ""
+    text = str(value).strip()
+    if text.endswith(".0") and text[:-2].isdigit():
+        text = text[:-2]
+    if text.isdigit():
+        return text.zfill(6)
+    return text
+
+
 def compute_concentration(position_summary: pd.DataFrame) -> pd.DataFrame:
     """按symbol聚合后的持仓占净值比例（净值=全部持仓市值之和，不含现金——现金规模
     未纳入本系统建模范围，用户需自行心算现金比例）。"""
     if position_summary.empty:
         return pd.DataFrame(columns=["symbol", "market_value", "weight_pct"])
-    agg = position_summary.groupby("symbol", as_index=False)["market_value"].sum()
+    src = position_summary.copy()
+    src["symbol"] = src["symbol"].map(_canon_symbol)
+    agg = src.groupby("symbol", as_index=False)["market_value"].sum()
     total = agg["market_value"].sum()
     agg["weight_pct"] = agg["market_value"] / total if total else np.nan
     return agg.sort_values("weight_pct", ascending=False)
@@ -198,8 +213,19 @@ def generate_risk_report(conn, as_of_date: str, lookback: int = _LOOKBACK_DEFAUL
     position_summary = compute_position_summary(conn, as_of_date)
     if position_summary.empty:
         return {"as_of": as_of_date, "status": "无持仓记录，风险报告为空"}
-    symbols = position_summary["symbol"].unique().tolist()
+    symbols = [_canon_symbol(s) for s in position_summary["symbol"].unique().tolist()]
+    symbols = [s for s in symbols if s]
     concentration = compute_concentration(position_summary)
+    if not concentration.empty:
+        name_keys = concentration["symbol"].tolist()
+        placeholders = ",".join(["?"] * len(name_keys))
+        names = conn.execute(
+            f"SELECT symbol, name FROM universe WHERE symbol IN ({placeholders})",
+            name_keys,
+        ).df()
+        if not names.empty:
+            names["symbol"] = names["symbol"].map(_canon_symbol)
+            concentration = concentration.merge(names, on="symbol", how="left")
     vol_var = compute_volatility_and_var(conn, symbols, as_of_date, lookback)
     corr = compute_portfolio_correlation(conn, symbols, as_of_date, lookback)
     port_var = compute_portfolio_var(conn, position_summary, as_of_date, lookback)

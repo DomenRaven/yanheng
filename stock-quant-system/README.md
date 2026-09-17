@@ -5,24 +5,33 @@
 对应总体方案：`c:\Users\MAC\.cursor\plans\个人炒股辅助本地应用_76077b1a.plan.md`
 理论依据：`../docs/`（本仓库上一级的理论库，见 `../README.md`）
 
-当前进度：**Phase 0 / 0.5 / 0.6 / 0.7 / 1 / 2 / 3 / 4 全部验收完成**（因子研究+LightGBM排序模型+
+当前进度：**Phase 0 / 0.5 / 0.6 / 0.7 / 1 / 2 / 3 / 4 全部验收完成**；**Phase 5 需求已对齐、实现未开工**（因子研究+LightGBM排序模型+
 全市场扫描首轮落地，样本外多头组合扣费后相对基准超额收益统计显著 p=0.0044；模型生命周期
 冠军-挑战者机制+漂移监控+行为金融代理信号层已接入掘金扫描；深度学习GNN挑战者已同协议评估，
 结论是维持LightGBM为生产冠军；Phase 4持仓驾驶舱+场景化建议引擎+组合优化再平衡+风险仪表盘+
 LLM解释层已上线Streamlit本地应用，对齐`docs/00-总览/02-产品定位与边界.md`全部Must/Should
 条款）。项目按MVP路线图（`docs/07-产品设计启示/03-MVP路线图.md`）四个阶段的Must/Should范围
-已全部覆盖，Won't清单（自动下单/高频/收益承诺）严格未触碰。
+已全部覆盖，Won't清单（自动下单/高频/收益承诺）严格未触碰。Phase 5（完整散户链+模拟盘）
+的需求规格与对照见 `docs/9.16-散户决策链需求规格.md`，状态见 `docs/9.16-项目状态报告.md`。
 
 - Phase 0-0.7 验收结果与真实缺口清单：`docs/phase0-acceptance-report.md`
 - Phase 1 因子/模型/回测结果与方法论边界：`docs/phase1-acceptance-report.md`
 - Phase 2 模型生命周期管理+行为金融信号层结果：`docs/phase2-acceptance-report.md`
 - Phase 3 深度学习挑战者评估结果（结论：维持LightGBM基线）：`docs/phase3-acceptance-report.md`
 - Phase 4 应用层（持仓/建议/风险/组合优化/LLM解释）验收结果：`docs/phase4-acceptance-report.md`
+- Phase 5 散户决策链需求规格（2026-09-16，含实现对照）：`docs/9.16-散户决策链需求规格.md`
+- Phase 5 项目状态报告（同日）：`docs/9.16-项目状态报告.md`
+- Phase 5 开发文档：`docs/phase5-development.md`
+- Phase 5 约束文档：`docs/phase5-constraints.md`
+- Phase 5 分阶段对接（模拟盘 A–D）：`docs/retail-complete-phase5-handoff.md`
+- 第四轮理论原文摘录（父目录）：`../docs/99-参考文献/notes/2026-09-16-散户决策链原文摘录.md`
 - 可用性测试通过后的UI优化（放大字体/建议卡片改版/今日决策速览/行情图表/名词解释/历史建议复盘/
   一键启动exe打包）：`docs/ux-upgrade-notes.md`
-- 用户手册 / 开发者手册（Word）：`docs/manuals/用户使用说明书.docx`、`docs/manuals/开发者使用说明书.docx`
+- 用户手册 / 开发者手册 / 人工可用性测试指南（Word）：`docs/manuals/`
+- 第二轮人工测试清单（Markdown，边测边勾）：`docs/manuals/人工可用性测试指南.md`
 - 本项目的开发工作流与道德约束：`.cursor/rules/quant-dev-loop.mdc`、
-  `.cursor/rules/vibe-coding-ethics.mdc`（工作区根目录）
+  `.cursor/rules/vibe-coding-ethics.mdc`；同内容已做成可加载 Skill：
+  `.cursor/skills/yanheng-dev-loop/`
 
 ## 1. 环境搭建记录
 
@@ -73,6 +82,7 @@ stock-quant-system/
 │   ├── http_retry.py            # 通用重试装饰器（指数退避+随机抖动）+ 限速sleep
 │   ├── tushare_client.py        # Tushare共用客户端 + 逐股票/逐交易日通用批处理编排函数
 │   └── ui_theme.py              # UI优化新增：全局CSS放大字体 + 建议卡片渲染 + 术语表(❓气泡)
+│   └── symbol_lookup.py         # 按公司名称/代码片段查 6 位代码（读 universe）
 ├── ingestion/
 │   ├── universe.py              # 股票池同步（代码/名称/交易所/板块/ST标记/退市标记）
 │   ├── quotes_batch.py          # 全市场日线行情批量/增量抓取
@@ -107,7 +117,7 @@ stock-quant-system/
 │   └── portfolio_optimizer.py    # 均值-方差(Grinold-Kahn Alpha)/风险平价，Ledoit-Wolf协方差收缩
 ├── llm/                           # Phase 4 LLM解释层（翻译层，不做预测/建议本身）
 │   ├── news_fetch.py             # 个股新闻抓取（东方财富，修复akshare已知regex bug）
-│   └── explain_assistant.py      # DeepSeek API：把结构化信号+新闻标题翻译成自然语言解释
+│   └── explain_assistant.py      # 通义千问（可切 DeepSeek）：翻译结构化信号+带时间戳的新闻；本机日期注入提示词
 ├── mlops/
 │   ├── registry/<run_id>/        # model.pkl + metadata.json，每次训练一份
 │   ├── registry/champion.json    # 当前冠军模型指针
@@ -115,7 +125,8 @@ stock-quant-system/
 │   ├── retrain_schedule.py       # 定期重训 + 冠军-挑战者晋升门禁(CD4ML)
 │   └── drift_monitor.py          # 特征PSI + Walk-Forward趋势 + 生产样本外IC + 滚动夏普
 ├── scripts/
-│   └── daily_pipeline.py        # 全ingestion模块统一增量更新入口（唯一定时任务入口）
+│   ├── run_data_update.py       # 数据更新引擎入口（fetch/写库解耦，推荐）
+│   └── daily_pipeline.py        # 同上编排的兼容别名
 ├── app.py                        # Phase 4：Streamlit入口——持仓驾驶舱总览 + 今日决策速览
 ├── launcher.py                   # UI优化：一键启动器源码（打包为 研衡启动器.exe）
 ├── .streamlit/config.toml        # UI优化：全局主题配色
@@ -169,7 +180,17 @@ stock-quant-system/
 ### 3.3 抓取健壮性设计
 
 - `common/http_retry.py`：指数退避重试（默认5次，最长等60秒）+ 随机抖动，避免"重试风暴"。
-- 每只股票的请求之间随机休眠 0.35~0.8 秒（`polite_sleep`），降低触发数据源反爬限制的概率。
+- **全局发车间隔**（`IntervalLimiter`）：`config.yaml` 的 `ingestion.rate_limit` 是进程内
+  所有工人共用的最小间隔（默认 0.35~0.8 秒），不是每个线程各睡一遍。顺序循环仍可调
+  `polite_sleep()`，它走同一把限速器。
+- **HTTP 线程池 + 单写者队列**：`common/parallel_fetch.py` 在工作线程里只打网络，
+  `on_result` 回到调用线程用 `write_session()` 短连接写入。`ingestion.http_workers`
+  默认 6（新浪/东财/巨潮）。Tushare Python 客户端非线程安全，相关步固定 `workers=1`，
+  间隔走 `ingestion.tushare_rate_limit`。
+- 放弃 sidecar 双库：Windows 上 DuckDB 文件锁是进程级的，旁路库合并成本高（Phase 0.5
+  已走过一遍）。日历类模块（`reference_data` / `market_data` / 部分 `tushare_*`）仍在
+  HTTP 期间握着连接，因此 **不与行情步重叠**。细节与 ADR 见
+  `docs/parallel-http-ingestion.md`。
 - 增量更新基于"该股票在库里的最大日期"计算起始点，脚本随时可中断、重新运行，
   天然支持断点续传，不会重复抓取。
 - 单只股票抓取失败不会中断整批任务，失败记录写入 `sync_log`，下次运行会自动重试
@@ -195,10 +216,13 @@ $env:PIP_CONFIG_FILE = "e:\妙妙工具\炒股辅助\stock-quant-system\.venv\pi
 $venv = "e:\妙妙工具\炒股辅助\stock-quant-system\.venv\Scripts\python.exe"
 cd "e:\妙妙工具\炒股辅助\stock-quant-system"
 
-# ---------- 数据层：日常/每周增量更新（唯一入口） ----------
-& $venv -m scripts.daily_pipeline
-& $venv -m scripts.daily_pipeline --only quotes,tushare_prices   # 只跑指定步骤
-& $venv -m scripts.daily_pipeline --skip fundamentals,income_statement  # 跳过更新频率低的步骤
+# ---------- 数据层：日常/每周增量更新 ----------
+& $venv -m scripts.run_data_update --fresh-run          # 全量/新一次更新（新 run_id）
+& $venv -m scripts.run_data_update --resume             # 中断后续跑（参数须与上次一致）
+& $venv -m scripts.run_data_update --only quotes,tushare_prices
+& $venv -m scripts.run_data_update --skip fundamentals,income_statement
+& $venv -m scripts.run_data_update --tushare-limit 3   # E2E/调试：Tushare 三步只跑前 N 条
+# daily_pipeline 与 run_data_update 等价；见 docs/ingestion-engine-work-report.md
 
 # ---------- 研究层：因子面板 -> 因子评估 -> 训练 -> 回测 -> 扫描 ----------
 & $venv -m research.panel --start 20160101              # 重建point-in-time特征面板
@@ -220,6 +244,8 @@ cd "e:\妙妙工具\炒股辅助\stock-quant-system"
 # 日常使用推荐直接双击项目根目录「研衡启动器.exe」，效果等价于上面这条命令(见第12节)
 # AI解释页需要在 .env 里配置 DASHSCOPE_API_KEY=xxx（阿里云百炼 https://bailian.console.aliyun.com/）
 # 未配置时该页面自动降级为仅展示结构化数据，其余页面不受影响
+# 通义/DeepSeek 都没有实时日历；「今天」由 explain_assistant 注入本机日期，新闻由东方财富即时检索。
+# 不要为了「模型还以为是 2024」去换 DeepSeek——换模型解决不了训练截止日期问题。
 ```
 
 ## 6. Phase 0 执行结果与已知限制
@@ -403,15 +429,19 @@ cd "e:\妙妙工具\炒股辅助\stock-quant-system"
   `rebalance`，不会覆盖任何风控结论。止盈止损阈值复用生产冠军模型训练时的三重障碍标签
   配置（8%/8%/20日），逻辑自洽。
 - `llm/news_fetch.py` + `llm/explain_assistant.py`：个股新闻抓取（修复了akshare
-  `stock_news_em`在本环境下的pyarrow正则bug）+ DeepSeek API"翻译层"——只做自然语言解释，
+  `stock_news_em`在本环境下的pyarrow正则bug）+ 通义千问"翻译层"——只做自然语言解释，
   强制规则禁止LLM给出买卖指令性表述，未配置`DASHSCOPE_API_KEY`时优雅降级。
+  聊天模型没有实时时钟：系统把本机日历日和新闻 `publish_time` 写进提示词，
+  不默认打开 DashScope `enable_search`（兼容接口不返回搜索来源）。换 DeepSeek
+  不能让模型「知道今天」。
 - `app.py` + `pages/`：Streamlit 4页应用（总览/持仓与建议/掘金扫描/风险仪表盘/AI解释），
   已用Playwright浏览器自动化逐页验证真实交互（录入持仓->生成建议卡片->触发集中度超限
   "减仓"建议->AI解释页正确降级提示缺少API Key）。
 
 **已知局限（如实记录）**：不接券商API，持仓为手动录入，无法反映真实交易滑点/费率差异；
 组合优化不含行业/风格中性化约束，assumed_IC=0.03是保守拍定值非逐日重估；LLM解释层依赖
-用户自行配置API Key，属于外部凭据缺口不是本系统能自解的。
+用户自行配置API Key，属于外部凭据缺口不是本系统能自解的。模型训练记忆会停在旧年份，
+「今天」只来自本机日期注入，不是模型自己联网对时。
 
 ## 12. 可用性测试通过后的UI/UX优化 + 一键启动打包（2026-08-26）
 
@@ -452,3 +482,11 @@ cd "e:\妙妙工具\炒股辅助\stock-quant-system"
 - 全流程边界测试覆盖表单空值/非法股票代码/搜索无匹配/筛选器清空等7类场景，均已验证优雅
   降级；顺带发现并修复一个真实bug：`历史建议复盘`页对pandas `NaN`用`or ''`兜底无效
   （`NaN`在Python里是真值），导致缺少name的旧记录显示成字面"nan"，已用`pd.notna()`修复。
+
+第二轮人工测试请按 `docs/manuals/人工可用性测试指南.md`（或同目录 docx）逐条勾选，不要凭记忆跳步。
+
+## 14. 按公司名称查代码（2026-08-26）
+
+`universe` 表已有 `name`，不新增数据源。`common/symbol_lookup.py` 对名称做包含匹配、对 6 位代码做精确/前缀匹配；多只结果用下拉选择。已接到：首页「按名称查代码」、持仓录入、行情图表、AI 解释。
+
+局限：只能搜到股票池里有的简称（交易所公布的 `name`），搜「紫金」可以、「Zijin」不行。后台 `daily_pipeline` 更新数据时，行情/财务等逐股抓取会在网络请求间隙释放 DuckDB 文件锁，前端刷新即可浏览；若恰好撞上写入瞬间，页面会提示稍后刷新，不再抛红屏。录入持仓等写入请等提示消失后再操作。

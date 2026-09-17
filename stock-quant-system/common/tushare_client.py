@@ -10,10 +10,9 @@ stk_holdernumber/block_trade）。2000档限频 200次/分钟、100000次/天/�
 token 存放在项目根目录 .env（TUSHARE_TOKEN=...），不硬编码进代码，.env 已在 .gitignore。
 
 两类批处理模式：
-    - "逐股票"：每只股票一次调用返回其全部历史（如 adj_factor/daily_basic），
-      适用于本身按 ts_code 查询的接口。
-    - "逐交易日"：每个交易日一次调用返回全市场当日快照（如 suspend_d/stk_limit/
-      top_list），适用于本身是"市场快照"类的接口，比逐股票循环效率高得多。
+    - "逐股票"：每只股票一次调用返回其全部历史（如 adj_factor），适用于按 ts_code 长历史接口。
+    - "逐交易日"：每个交易日一次调用返回全市场当日快照（如 daily_basic/suspend_d/stk_limit/
+      top_list），比逐股票循环 API 次数更少，是全量灌库首选。
 """
 from __future__ import annotations
 
@@ -24,11 +23,11 @@ from typing import Callable
 
 import pandas as pd
 import tushare as ts
-from tqdm import tqdm
 
 from common.config import get_config
-from common.db import get_connection, init_schema
-from common.http_retry import FetchFailedError, polite_sleep, retry_on_failure
+from common.db import write_session
+from common.http_retry import retry_on_failure, tushare_limiter
+from common.parallel_fetch import map_fetch_then_write
 
 logger = logging.getLogger("ingestion.tushare")
 
@@ -124,20 +123,37 @@ def run_symbol_loop_sync(
     targets: list[tuple[str, str]],
     limit: int | None = None,
 ) -> dict:
-    """逐股票批处理通用编排：targets 是 [(symbol, ts_code), ...]。
-    fetch_fn(ts_code) -> 原始df；normalize_fn(原始df, symbol) -> 待写入df。"""
+    """逐股票批处理。HTTP 在循环里，写入走 write_session（短连接 + 进程内写锁）。
+    Tushare 客户端非线程安全，workers 固定 1。"""
     checkpoint_size = get_config()["ingestion"].get("checkpoint_batch_size", 50)
     if limit:
         targets = targets[:limit]
 
-    conn = get_connection()
-    init_schema(conn)
-    stats = {"ok": 0, "empty": 0, "failed": 0, "rows_written": 0, "failed_symbols": []}
+    with write_session(init=True):
+        pass
 
-    for i, (symbol, ts_code) in enumerate(tqdm(targets, desc=task_name)):
-        try:
-            raw = retry_on_failure()(fetch_fn)(ts_code)
-            norm = normalize_fn(raw, symbol)
+    stats = {"ok": 0, "empty": 0, "failed": 0, "rows_written": 0, "failed_symbols": []}
+    done = {"n": 0}
+
+    def fetch(item: tuple[str, str]) -> pd.DataFrame:
+        _symbol, ts_code = item
+        return retry_on_failure()(fetch_fn)(ts_code)
+
+    def on_result(item: tuple[str, str], raw: pd.DataFrame | None, err: BaseException | None) -> None:
+        symbol, _ts = item
+        done["n"] += 1
+        if err is not None:
+            stats["failed"] += 1
+            stats["failed_symbols"].append(symbol)
+            with write_session() as conn:
+                conn.execute(
+                    "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
+                    [task_name, symbol, "failed", f"{type(err).__name__}: {str(err)[:280]}"],
+                )
+            logger.warning("%s: %s 失败: %s: %s", task_name, symbol, type(err).__name__, err)
+            return
+        norm = normalize_fn(raw, symbol)
+        with write_session() as conn:
             if norm.empty:
                 stats["empty"] += 1
             else:
@@ -147,21 +163,12 @@ def run_symbol_loop_sync(
                 "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
                 [task_name, symbol, "success", f"rows={len(norm)}"],
             )
-        except Exception as exc:  # noqa: BLE001 - 单日/单票数据质量问题不得拖垮整批
-            stats["failed"] += 1
-            stats["failed_symbols"].append(symbol)
-            conn.execute(
-                "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
-                [task_name, symbol, "failed", f"{type(exc).__name__}: {str(exc)[:280]}"],
-            )
-            logger.warning("%s: %s 失败: %s: %s", task_name, symbol, type(exc).__name__, exc)
+        if done["n"] % checkpoint_size == 0:
+            logger.info("%s 进度 %d/%d: %s", task_name, done["n"], len(targets), stats)
 
-        if (i + 1) % checkpoint_size == 0:
-            logger.info("%s 进度 %d/%d: %s", task_name, i + 1, len(targets), stats)
-
-        polite_sleep()
-
-    conn.close()
+    map_fetch_then_write(
+        targets, fetch, on_result, workers=1, desc=task_name, limiter=tushare_limiter()
+    )
     logger.info("%s 完成: %s", task_name, stats)
     return stats
 
@@ -175,39 +182,99 @@ def run_date_loop_sync(
     trade_dates: list[str],
     limit: int | None = None,
 ) -> dict:
-    """逐交易日批处理通用编排：每个交易日一次调用覆盖全市场快照，比逐股票循环快得多。
-    fetch_fn(trade_date) -> 原始df；normalize_fn(原始df) -> 待写入df。"""
+    """逐交易日批处理。HTTP 与写入拆开，避免整段占着 DuckDB。"""
     checkpoint_size = get_config()["ingestion"].get("checkpoint_batch_size", 50)
     if limit:
         trade_dates = trade_dates[:limit]
 
-    conn = get_connection()
-    init_schema(conn)
-    stats = {"ok": 0, "empty": 0, "failed": 0, "rows_written": 0, "failed_dates": []}
+    with write_session(init=True):
+        pass
 
-    for i, trade_date in enumerate(tqdm(trade_dates, desc=task_name)):
-        try:
-            raw = retry_on_failure()(fetch_fn)(trade_date)
-            norm = normalize_fn(raw)
+    stats = {"ok": 0, "empty": 0, "failed": 0, "rows_written": 0, "failed_dates": []}
+    done = {"n": 0}
+
+    def fetch(trade_date: str) -> pd.DataFrame:
+        return retry_on_failure()(fetch_fn)(trade_date)
+
+    def on_result(trade_date: str, raw: pd.DataFrame | None, err: BaseException | None) -> None:
+        done["n"] += 1
+        if err is not None:
+            stats["failed"] += 1
+            stats["failed_dates"].append(trade_date)
+            logger.warning("%s: %s 失败: %s: %s", task_name, trade_date, type(err).__name__, err)
+            return
+        norm = normalize_fn(raw)
+        with write_session() as conn:
             if norm.empty:
                 stats["empty"] += 1
             else:
                 stats["rows_written"] += upsert(conn, table, key_cols, norm)
                 stats["ok"] += 1
-        except Exception as exc:  # noqa: BLE001
-            stats["failed"] += 1
-            stats["failed_dates"].append(trade_date)
-            logger.warning("%s: %s 失败: %s: %s", task_name, trade_date, type(exc).__name__, exc)
+        if done["n"] % checkpoint_size == 0:
+            logger.info("%s 进度 %d/%d: %s", task_name, done["n"], len(trade_dates), stats)
 
-        if (i + 1) % checkpoint_size == 0:
-            logger.info("%s 进度 %d/%d: %s", task_name, i + 1, len(trade_dates), stats)
-
-        polite_sleep()
-
-    conn.execute(
-        "INSERT INTO sync_log (task_name, status, message) VALUES (?, ?, ?)",
-        [task_name, "success", str(stats)[:500]],
+    map_fetch_then_write(
+        trade_dates, fetch, on_result, workers=1, desc=task_name, limiter=tushare_limiter()
     )
-    conn.close()
+    with write_session() as conn:
+        conn.execute(
+            "INSERT INTO sync_log (task_name, status, message) VALUES (?, ?, ?)",
+            [task_name, "success", str(stats)[:500]],
+        )
+    logger.info("%s 完成: %s", task_name, stats)
+    return stats
+
+
+def run_item_loop_sync(
+    task_name: str,
+    table: str,
+    key_cols: list[str],
+    items: list,
+    fetch_fn: Callable,
+    normalize_fn: Callable[[pd.DataFrame, object], pd.DataFrame],
+    limit: int | None = None,
+    *,
+    item_label: Callable[[object], str] | None = None,
+) -> dict:
+    """通用逐条批处理（如 index_code+trade_date 二元组）。fetch 与 write 分离。"""
+    checkpoint_size = get_config()["ingestion"].get("checkpoint_batch_size", 50)
+    if limit:
+        items = items[:limit]
+    label = item_label or (lambda x: str(x))
+
+    with write_session(init=True):
+        pass
+
+    stats = {"ok": 0, "empty": 0, "failed": 0, "rows_written": 0, "failed_items": []}
+    done = {"n": 0}
+
+    def fetch(item: object) -> pd.DataFrame:
+        return retry_on_failure()(fetch_fn)(item)
+
+    def on_result(item: object, raw: pd.DataFrame | None, err: BaseException | None) -> None:
+        done["n"] += 1
+        if err is not None:
+            stats["failed"] += 1
+            stats["failed_items"].append(label(item))
+            logger.warning("%s: %s 失败: %s: %s", task_name, label(item), type(err).__name__, err)
+            return
+        norm = normalize_fn(raw, item)
+        with write_session() as conn:
+            if norm.empty:
+                stats["empty"] += 1
+            else:
+                stats["rows_written"] += upsert(conn, table, key_cols, norm)
+                stats["ok"] += 1
+        if done["n"] % checkpoint_size == 0:
+            logger.info("%s 进度 %d/%d: %s", task_name, done["n"], len(items), stats)
+
+    map_fetch_then_write(
+        items, fetch, on_result, workers=1, desc=task_name, limiter=tushare_limiter()
+    )
+    with write_session() as conn:
+        conn.execute(
+            "INSERT INTO sync_log (task_name, status, message) VALUES (?, ?, ?)",
+            [task_name, "success", str(stats)[:500]],
+        )
     logger.info("%s 完成: %s", task_name, stats)
     return stats

@@ -20,13 +20,15 @@ import datetime as dt
 import io
 import logging
 
+import json
+
 import akshare as ak
 import pandas as pd
 import requests
 import urllib3
 
 from common.config import get_config
-from common.db import get_connection, init_schema
+from common.db import get_connection, init_schema, write_session
 from common.http_retry import FetchFailedError, polite_sleep, retry_on_failure
 from ingestion.universe import classify_symbol
 
@@ -44,10 +46,140 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _PERIOD_SUFFIXES = [("一季", "03-31"), ("半年报", "06-30"), ("三季", "09-30"), ("年报", "12-31")]
 
+# 巨潮 getPrbookInfo：akshare 未带 Referer/Origin 时本机实测易 403→空 body→JSONDecodeError（2026-09 E2E）。
+_CNINFO_PRBOOK_URL = "http://www.cninfo.com.cn/new/information/getPrbookInfo"
+_CNINFO_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "http://www.cninfo.com.cn/new/commonUrl?url=data/yypl",
+    "Origin": "http://www.cninfo.com.cn",
+}
+_CNINFO_MARKET_MAP = {
+    "沪深京": "szsh",
+    "深市": "sz",
+    "深主板": "szmb",
+    "创业板": "szcn",
+    "沪市": "sh",
+    "沪主板": "shmb",
+    "科创板": "shkcp",
+    "北交所": "bj",
+}
 
-@retry_on_failure()
-def _fetch_disclosure(market: str, period: str) -> pd.DataFrame:
-    return ak.stock_report_disclosure(market=market, period=period)
+
+def _disclosure_settings() -> dict:
+    ref = get_config().get("ingestion", {}).get("reference_data", {}).get("disclosure", {})
+    return {
+        "consecutive_fail_abort": max(1, int(ref.get("consecutive_fail_abort", 6))),
+        "prefer_tushare": bool(ref.get("prefer_tushare", False)),
+    }
+
+
+def _period_label_to_section_time(period_label: str) -> str:
+    year = period_label[:4]
+    period_map = {
+        f"{year}一季": f"{year}-03-31",
+        f"{year}半年报": f"{year}-06-30",
+        f"{year}三季": f"{year}-09-30",
+        f"{year}年报": f"{year}-12-31",
+    }
+    if period_label not in period_map:
+        raise ValueError(f"未知报告期标签: {period_label}")
+    return period_map[period_label]
+
+
+def _cninfo_prbook_json_to_df(text_json: dict) -> pd.DataFrame:
+    rows = text_json.get("prbookinfos")
+    if not rows:
+        return pd.DataFrame()
+    temp_df = pd.DataFrame(rows)
+    temp_df = temp_df.rename(
+        columns={
+            "seccode": "股票代码",
+            "secname": "股票简称",
+            "f002d_0102": "首次预约",
+            "f006d_0102": "实际披露",
+            "f003d_0102": "初次变更",
+            "f004d_0102": "二次变更",
+            "f005d_0102": "三次变更",
+        }
+    )
+    keep = [c for c in ["股票代码", "股票简称", "首次预约", "初次变更", "二次变更", "三次变更", "实际披露"] if c in temp_df.columns]
+    temp_df = temp_df[keep]
+    for col in ("首次预约", "初次变更", "二次变更", "三次变更", "实际披露"):
+        if col in temp_df.columns:
+            temp_df[col] = pd.to_datetime(temp_df[col], errors="coerce").dt.date
+    return temp_df
+
+
+@retry_on_failure(max_attempts=2, base_delay=1.0, max_delay=8.0)
+def _fetch_disclosure_cninfo(market: str, period_label: str) -> pd.DataFrame:
+    """巨潮预约披露（与 akshare.stock_report_disclosure 同接口，补浏览器头）。必须用 http，https 易 403。"""
+    params = {
+        "sectionTime": _period_label_to_section_time(period_label),
+        "firstTime": "",
+        "lastTime": "",
+        "market": _CNINFO_MARKET_MAP[market],
+        "stockCode": "",
+        "orderClos": "",
+        "isDesc": "",
+        "pagesize": "10000",
+        "pagenum": "1",
+    }
+    resp = requests.post(_CNINFO_PRBOOK_URL, params=params, headers=_CNINFO_HEADERS, timeout=45)
+    if resp.status_code != 200 or not resp.text.strip():
+        raise FetchFailedError(f"cninfo HTTP {resp.status_code}, body={resp.text[:120]!r}")
+    try:
+        payload = resp.json()
+    except json.JSONDecodeError as exc:
+        raise FetchFailedError(f"cninfo 非 JSON 响应: {resp.text[:120]!r}") from exc
+    if "prbookinfos" not in payload:
+        raise FetchFailedError(f"cninfo 缺少 prbookinfos: {str(payload)[:200]}")
+    return _cninfo_prbook_json_to_df(payload)
+
+
+@retry_on_failure(max_attempts=3, base_delay=0.5, max_delay=6.0)
+def _fetch_disclosure_tushare(report_date: dt.date) -> pd.DataFrame:
+    """按报告期 end_date 一次拉全市场（Tushare disclosure_date）。cninfo 不可用时的回退。"""
+    from common.tushare_client import get_pro_api
+
+    end = report_date.strftime("%Y%m%d")
+    raw = get_pro_api().disclosure_date(end_date=end)
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+    out = raw.copy()
+    out["symbol"] = out["ts_code"].astype(str).str.split(".").str[0].str.zfill(6)
+    ann = out["actual_date"].fillna(out["pre_date"]).fillna(out["ann_date"])
+    out["announce_date"] = pd.to_datetime(ann, format="%Y%m%d", errors="coerce").dt.date
+    out["report_date"] = report_date
+    return out[["symbol", "report_date", "announce_date"]].dropna(subset=["symbol", "report_date"])
+
+
+def _normalize_disclosure_df(raw: pd.DataFrame, report_date: dt.date, source: str) -> pd.DataFrame:
+    if raw.empty:
+        return raw
+    if source == "tushare":
+        df = raw.copy()
+        if "report_date" not in df.columns:
+            df["report_date"] = report_date
+        return df[["symbol", "report_date", "announce_date"]].drop_duplicates(subset=["symbol", "report_date"])
+    df = raw.rename(columns={"股票代码": "symbol", "实际披露": "announce_date"})
+    df["symbol"] = df["symbol"].astype(str).str.zfill(6)
+    df["announce_date"] = pd.to_datetime(df["announce_date"], errors="coerce").dt.date
+    df["report_date"] = report_date
+    return df[["symbol", "report_date", "announce_date"]].drop_duplicates(subset=["symbol", "report_date"])
+
+
+def _fetch_disclosure_period(market: str, period_label: str, report_date: dt.date) -> tuple[pd.DataFrame, str]:
+    settings = _disclosure_settings()
+    if settings["prefer_tushare"]:
+        return _fetch_disclosure_tushare(report_date), "tushare"
+    try:
+        return _fetch_disclosure_cninfo(market, period_label), "cninfo"
+    except FetchFailedError as cn_exc:
+        logger.warning("巨潮 %s 失败，回退 Tushare disclosure_date: %s", period_label, cn_exc)
+        return _fetch_disclosure_tushare(report_date), "tushare"
 
 
 def _iter_periods(start_year: int, end_year: int):
@@ -65,66 +197,83 @@ def sync_disclosure_calendar(start_year: int | None = None, end_year: int | None
     cfg = get_config()
     start_year = start_year or int(cfg["ingestion"]["history_start_date"][:4])
     end_year = end_year or dt.date.today().year
+    abort_after = _disclosure_settings()["consecutive_fail_abort"]
 
-    conn = get_connection()
-    init_schema(conn)
+    with write_session(init=True):
+        pass
+
     total_rows = 0
     periods_done = 0
     periods_failed: list[str] = []
-    try:
-        for period_label, report_date in _iter_periods(start_year, end_year):
-            try:
-                raw = _fetch_disclosure(market="沪深京", period=period_label)
-            except FetchFailedError as exc:
-                periods_failed.append(period_label)
+    sources: dict[str, int] = {"cninfo": 0, "tushare": 0}
+    consecutive_fail = 0
+    aborted_early = False
+
+    for period_label, report_date in _iter_periods(start_year, end_year):
+        try:
+            raw, source = _fetch_disclosure_period("沪深京", period_label, report_date)
+        except FetchFailedError as exc:
+            periods_failed.append(period_label)
+            consecutive_fail += 1
+            with write_session() as conn:
                 conn.execute(
                     "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
                     ["sync_disclosure_calendar", None, "failed", f"{period_label}: {str(exc)[:200]}"],
                 )
-                logger.warning("公告日历 %s 抓取失败，跳过: %s", period_label, exc)
-                polite_sleep()
-                continue
-
-            df = raw.rename(columns={"股票代码": "symbol", "实际披露": "announce_date"})
-            df["symbol"] = df["symbol"].astype(str).str.zfill(6)
-            df["announce_date"] = pd.to_datetime(df["announce_date"], errors="coerce").dt.date
-            df["report_date"] = report_date
-            df = df[["symbol", "report_date", "announce_date"]].drop_duplicates(subset=["symbol", "report_date"])
-
-            conn.register("incoming_disclosure", df)
-            conn.execute(
-                """
-                DELETE FROM disclosure_calendar
-                WHERE (symbol, report_date) IN (SELECT symbol, report_date FROM incoming_disclosure)
-                """
-            )
-            conn.execute(
-                """
-                INSERT INTO disclosure_calendar (symbol, report_date, announce_date)
-                SELECT symbol, report_date, announce_date FROM incoming_disclosure
-                """
-            )
-            conn.unregister("incoming_disclosure")
-
-            total_rows += len(df)
-            periods_done += 1
-            logger.info("公告日历 %s(%s) 完成: %d条", period_label, report_date, len(df))
+            logger.warning("公告日历 %s 抓取失败，跳过: %s", period_label, exc)
             polite_sleep()
+            if consecutive_fail >= abort_after:
+                logger.error(
+                    "公告日历连续失败 %d 期，触发熔断（阈值=%d），剩余报告期跳过",
+                    consecutive_fail,
+                    abort_after,
+                )
+                aborted_early = True
+                break
+            continue
 
+        df = _normalize_disclosure_df(raw, report_date, source)
+        with write_session() as conn:
+            if not df.empty:
+                conn.register("incoming_disclosure", df)
+                conn.execute(
+                    """
+                    DELETE FROM disclosure_calendar
+                    WHERE (symbol, report_date) IN (SELECT symbol, report_date FROM incoming_disclosure)
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO disclosure_calendar (symbol, report_date, announce_date)
+                    SELECT symbol, report_date, announce_date FROM incoming_disclosure
+                    """
+                )
+                conn.unregister("incoming_disclosure")
+
+        total_rows += len(df)
+        periods_done += 1
+        sources[source] = sources.get(source, 0) + 1
+        consecutive_fail = 0
+        logger.info("公告日历 %s(%s) 完成: %d条 source=%s", period_label, report_date, len(df), source)
+        polite_sleep()
+
+    summary = (
+        f"periods_done={periods_done}, rows={total_rows}, failed={periods_failed}, "
+        f"sources={sources}, aborted_early={aborted_early}"
+    )
+    with write_session() as conn:
         conn.execute(
             "INSERT INTO sync_log (task_name, status, message) VALUES (?, ?, ?)",
-            [
-                "sync_disclosure_calendar",
-                "success",
-                f"periods_done={periods_done}, rows={total_rows}, failed={periods_failed}",
-            ],
+            ["sync_disclosure_calendar", "success", summary[:500]],
         )
-        logger.info(
-            "批量公告日历同步完成: periods=%d rows=%d failed=%s", periods_done, total_rows, periods_failed
-        )
-        return {"periods_done": periods_done, "rows": total_rows, "failed_periods": periods_failed}
-    finally:
-        conn.close()
+    logger.info("批量公告日历同步完成: %s", summary)
+    return {
+        "periods_done": periods_done,
+        "rows": total_rows,
+        "failed_periods": periods_failed,
+        "sources": sources,
+        "aborted_early": aborted_early,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -1,147 +1,186 @@
 """
 Tushare Pro 集成 —— 每日市值指标 + 指数历史成分(point-in-time) + 停复牌/官方涨跌停价格。
 
-解决 docs/phase0.6-secondary-gap-assessment.md 记录的：
-    - 项目"总市值/流通市值批量"：daily_basic 直接提供交易所口径官方市值/PE/PB/PS，
-      比自建 share_changes 拼接更权威（保留 corporate_actions.py 的股本变动数据作为交叉校验）
-    - 项R"历史指数成分股变更"：此前免费源(csindex)只有当前快照，index_weight提供
-      月度point-in-time历史成分和权重，首次真正解决"某股票在T日是否属于沪深300"
-    - 项T"停牌/复牌历史"：此前 news_trade_notify_suspend_baidu 返回空表不可用，
-      suspend_d 提供官方停复牌记录
-
-额外拿到的官方涨跌停价格(limit_price)可与 research/a_share_rules.py 自算规则交叉校验。
+daily_basic 默认按 trade_date 拉全市场快照（~2600 次/全历史），替代逐股 ~5500 次；
+步内子任务断点见 common.ingestion_engine.pipeline_state.substeps。
 """
 from __future__ import annotations
 
 import datetime as dt
 import logging
+from typing import Any
 
 import pandas as pd
 
 from common.config import get_config
 from common.db import get_connection, init_schema
+from common.ingestion_engine.pipeline_state import load_state, mark_substep, substep_is_ok
 from common.tushare_client import (
     get_pro_api,
     get_trade_dates,
-    get_universe_ts_codes,
     run_date_loop_sync,
-    run_symbol_loop_sync,
+    run_item_loop_sync,
 )
 
 logger = logging.getLogger("ingestion.tushare_market_data")
 
+PIPELINE_STEP = "tushare_market_data"
+MARKET_SUBTASKS = ("daily_basic", "index_weight", "suspend_calendar", "limit_price")
+
 _CONSTITUENT_INDICES = {"000300.SH": "沪深300", "000905.SH": "中证500", "000852.SH": "中证1000"}
 
+_DAILY_BASIC_COLS = [
+    "symbol",
+    "trade_date",
+    "close",
+    "turnover_rate",
+    "turnover_rate_f",
+    "volume_ratio",
+    "pe",
+    "pe_ttm",
+    "pb",
+    "ps",
+    "ps_ttm",
+    "dv_ratio",
+    "dv_ttm",
+    "total_share",
+    "float_share",
+    "free_share",
+    "total_mv",
+    "circ_mv",
+]
 
-# ---------------------------------------------------------------------------
-# 1. 每日市值/估值指标
-# ---------------------------------------------------------------------------
+
+def _pipeline_running() -> bool:
+    state = load_state()
+    return bool(state and state.get("status") == "running")
 
 
-def _fetch_daily_basic(ts_code: str) -> pd.DataFrame:
+def _skip_market_subtask(name: str) -> bool:
+    return substep_is_ok(load_state(), PIPELINE_STEP, name)
+
+
+def _record_market_subtask(name: str, stats: dict[str, Any]) -> None:
+    state = load_state()
+    if state and state.get("status") == "running":
+        mark_substep(state, PIPELINE_STEP, name, {"status": "ok", "stats": stats})
+
+
+def _active_universe_symbols(conn) -> set[str]:
+    rows = conn.execute(
+        "SELECT symbol FROM universe WHERE exchange IN ('sh','sz','bj') AND is_delisted = FALSE"
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def _daily_basic_trade_dates(conn, limit: int | None) -> list[str]:
     cfg = get_config()
     start = cfg["ingestion"]["history_start_date"]
-    return get_pro_api().daily_basic(ts_code=ts_code, start_date=start)
+    end = dt.date.today().strftime("%Y%m%d")
+    dates = get_trade_dates(conn, start, end)
+    row = conn.execute("SELECT max(trade_date) FROM daily_basic").fetchone()
+    max_d = row[0] if row else None
+    if max_d is not None:
+        max_s = max_d.strftime("%Y%m%d") if hasattr(max_d, "strftime") else str(max_d).replace("-", "")[:8]
+        dates = [d for d in dates if d > max_s]
+    if limit:
+        dates = dates[:limit]
+    return dates
 
 
-def _normalize_daily_basic(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+def _fetch_daily_basic_by_date(trade_date: str) -> pd.DataFrame:
+    return get_pro_api().daily_basic(trade_date=trade_date)
+
+
+def _normalize_daily_basic_snapshot(df: pd.DataFrame, universe: set[str]) -> pd.DataFrame:
     if df.empty:
         return df
     out = df.copy()
-    out["symbol"] = symbol
+    if "ts_code" in out.columns:
+        out["symbol"] = out["ts_code"].astype(str).str.split(".").str[0]
+    elif "symbol" not in out.columns:
+        return pd.DataFrame()
     out["trade_date"] = pd.to_datetime(out["trade_date"], format="%Y%m%d", errors="coerce").dt.date
     out = out.dropna(subset=["trade_date"])
-    cols = [
-        "symbol", "trade_date", "close", "turnover_rate", "turnover_rate_f", "volume_ratio",
-        "pe", "pe_ttm", "pb", "ps", "ps_ttm", "dv_ratio", "dv_ttm",
-        "total_share", "float_share", "free_share", "total_mv", "circ_mv",
-    ]
-    for c in cols:
+    out = out[out["symbol"].isin(universe)]
+    for c in _DAILY_BASIC_COLS:
         if c not in out.columns:
             out[c] = None
-    return out[cols].drop_duplicates(subset=["symbol", "trade_date"])
+    return out[_DAILY_BASIC_COLS].drop_duplicates(subset=["symbol", "trade_date"])
 
 
 def sync_daily_basic(symbols: list[str] | None = None, limit: int | None = None) -> dict:
+    if symbols:
+        logger.warning("daily_basic 已改为按 trade_date 快照；symbols 参数忽略")
     conn = get_connection()
     init_schema(conn)
-    targets = get_universe_ts_codes(conn, symbols, include_delisted=False)
+    universe = _active_universe_symbols(conn)
+    trade_dates = _daily_basic_trade_dates(conn, limit)
     conn.close()
-    return run_symbol_loop_sync(
+    if not trade_dates:
+        logger.info("sync_daily_basic: 无待补交易日（已是最新）")
+        return {"ok": 0, "empty": 0, "failed": 0, "rows_written": 0, "failed_dates": [], "skipped": True}
+
+    uni = universe
+
+    def normalize(df: pd.DataFrame) -> pd.DataFrame:
+        return _normalize_daily_basic_snapshot(df, uni)
+
+    return run_date_loop_sync(
         task_name="sync_daily_basic",
         table="daily_basic",
         key_cols=["symbol", "trade_date"],
-        fetch_fn=_fetch_daily_basic,
-        normalize_fn=_normalize_daily_basic,
-        targets=targets,
-        limit=limit,
+        fetch_fn=_fetch_daily_basic_by_date,
+        normalize_fn=normalize,
+        trade_dates=trade_dates,
+        limit=None,
     )
 
 
-# ---------------------------------------------------------------------------
-# 2. 指数历史成分（月度快照，point-in-time）
-# ---------------------------------------------------------------------------
-
-
 def _month_end_trade_dates(trade_dates: list[str]) -> list[str]:
-    """从交易日列表里取每个自然月的最后一个交易日（不是自然月末，避开假期导致的空快照，
-    2026-08-25 实测印证：2020-01-31是春节假期非交易日，若直接用自然月末查询会拿到空表）。"""
     df = pd.DataFrame({"d": pd.to_datetime(trade_dates, format="%Y%m%d")})
     df["ym"] = df["d"].dt.to_period("M")
     last_per_month = df.groupby("ym")["d"].max()
     return [d.strftime("%Y%m%d") for d in last_per_month]
 
 
+def _fetch_index_weight(item: tuple[str, str]) -> pd.DataFrame:
+    index_code, trade_date = item
+    return get_pro_api().index_weight(index_code=index_code, trade_date=trade_date)
+
+
+def _normalize_index_weight(df: pd.DataFrame, item: tuple[str, str]) -> pd.DataFrame:
+    index_code, _trade_date = item
+    if df.empty:
+        return df
+    out = df.rename(columns={"con_code": "symbol"}).copy()
+    out["symbol"] = out["symbol"].astype(str).str.split(".").str[0]
+    out["trade_date"] = pd.to_datetime(out["trade_date"], format="%Y%m%d", errors="coerce").dt.date
+    out = out.dropna(subset=["trade_date"])
+    out["index_code"] = index_code
+    return out[["index_code", "symbol", "trade_date", "weight"]]
+
+
 def sync_index_weight(limit: int | None = None) -> dict:
     cfg = get_config()
     start = cfg["ingestion"]["history_start_date"]
     end = dt.date.today().strftime("%Y%m%d")
-
     conn = get_connection()
     init_schema(conn)
     trade_dates = get_trade_dates(conn, start, end)
     conn.close()
     month_ends = _month_end_trade_dates(trade_dates)
-    if limit:
-        month_ends = month_ends[:limit]
-
-    stats = {"rows": 0, "failed": []}
-    conn = get_connection()
-    init_schema(conn)
-    try:
-        for index_code, name in _CONSTITUENT_INDICES.items():
-            for trade_date in month_ends:
-                try:
-                    df = get_pro_api().index_weight(index_code=index_code, trade_date=trade_date)
-                except Exception as exc:  # noqa: BLE001
-                    stats["failed"].append((index_code, trade_date))
-                    logger.warning("index_weight %s %s 失败: %s", index_code, trade_date, exc)
-                    continue
-                if df.empty:
-                    continue
-                out = df.rename(columns={"con_code": "symbol"}).copy()
-                out["symbol"] = out["symbol"].str.split(".").str[0]
-                out["trade_date"] = pd.to_datetime(out["trade_date"], format="%Y%m%d", errors="coerce").dt.date
-                out = out.dropna(subset=["trade_date"])
-                out = out[["index_code", "symbol", "trade_date", "weight"]]
-
-                from common.tushare_client import upsert
-                stats["rows"] += upsert(conn, "index_weight", ["index_code", "symbol", "trade_date"], out)
-
-            logger.info("index_weight %s(%s) 完成，累计rows=%d", name, index_code, stats["rows"])
-
-        conn.execute(
-            "INSERT INTO sync_log (task_name, status, message) VALUES (?, ?, ?)",
-            ["sync_index_weight", "success", str(stats)[:500]],
-        )
-        return stats
-    finally:
-        conn.close()
-
-
-# ---------------------------------------------------------------------------
-# 3. 停复牌历史 + 官方涨跌停价格（逐交易日，市场快照）
-# ---------------------------------------------------------------------------
+    items = [(index_code, td) for index_code in _CONSTITUENT_INDICES for td in month_ends]
+    return run_item_loop_sync(
+        task_name="sync_index_weight",
+        table="index_weight",
+        key_cols=["index_code", "symbol", "trade_date"],
+        items=items,
+        fetch_fn=_fetch_index_weight,
+        normalize_fn=_normalize_index_weight,
+        limit=limit,
+        item_label=lambda x: f"{x[0]}@{x[1]}",
+    )
 
 
 def _fetch_suspend(trade_date: str) -> pd.DataFrame:
@@ -210,13 +249,23 @@ def sync_limit_price(limit: int | None = None) -> dict:
     )
 
 
-def sync_all_tushare_market_data() -> dict:
-    results = {}
+def sync_all_tushare_market_data(limit: int | None = None) -> dict:
+    runners = {
+        "daily_basic": sync_daily_basic,
+        "index_weight": sync_index_weight,
+        "suspend_calendar": sync_suspend_calendar,
+        "limit_price": sync_limit_price,
+    }
+    results: dict[str, Any] = {}
     logger.info("=== Tushare 市值/指数成分/停复牌/涨跌停价格 开始 ===")
-    results["daily_basic"] = sync_daily_basic()
-    results["index_weight"] = sync_index_weight()
-    results["suspend_calendar"] = sync_suspend_calendar()
-    results["limit_price"] = sync_limit_price()
+    for name in MARKET_SUBTASKS:
+        if _pipeline_running() and _skip_market_subtask(name):
+            logger.info("=== 跳过子任务 %s（本 run 步内断点已完成）===", name)
+            results[name] = {"skipped_resume": True}
+            continue
+        results[name] = runners[name](limit=limit)
+        if _pipeline_running():
+            _record_market_subtask(name, results[name])
     logger.info("=== Tushare 市值/指数成分/停复牌/涨跌停价格 完成: %s ===", results)
     return results
 

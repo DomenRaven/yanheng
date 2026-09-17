@@ -17,11 +17,11 @@ import logging
 
 import akshare as ak
 import pandas as pd
-from tqdm import tqdm
 
 from common.config import get_config
-from common.db import get_connection, init_schema
-from common.http_retry import FetchFailedError, polite_sleep, retry_on_failure
+from common.db import write_session
+from common.http_retry import retry_on_failure, tushare_limiter
+from common.parallel_fetch import map_fetch_then_write
 from common.tushare_client import get_pro_api, to_ts_code
 
 logger = logging.getLogger("ingestion.income_statement_batch")
@@ -208,26 +208,41 @@ def sync_income_statement_batch(
 ) -> dict:
     checkpoint_size = get_config()["ingestion"].get("checkpoint_batch_size", 50)
 
-    conn = get_connection()
-    init_schema(conn)
-    targets = _get_sync_targets(conn, symbols, source)
-    if skip_existing:
-        done = {r[0] for r in conn.execute("SELECT DISTINCT symbol FROM income_statement").fetchall()}
-        before = len(targets)
-        targets = [(sym, key) for sym, key in targets if sym not in done]
-        logger.info("skip_existing=True：跳过已有利润表的股票 %d 只，剩余待抓 %d 只", before - len(targets), len(targets))
+    with write_session(init=True) as conn:
+        targets = _get_sync_targets(conn, symbols, source)
+        if skip_existing:
+            done = {r[0] for r in conn.execute("SELECT DISTINCT symbol FROM income_statement").fetchall()}
+            before = len(targets)
+            targets = [(sym, key) for sym, key in targets if sym not in done]
+            logger.info("skip_existing=True：跳过已有利润表的股票 %d 只，剩余待抓 %d 只", before - len(targets), len(targets))
     if limit:
         targets = targets[:limit]
 
     stats = {"ok": 0, "empty": 0, "failed": 0, "rows_written": 0, "failed_symbols": [], "source": source}
     to_long = _tushare_to_long if source == "tushare" else _sina_to_long
-    fetch_fn = _fetch_income_tushare if source == "tushare" else _fetch_income_sina
+    fetch_raw = _fetch_income_tushare if source == "tushare" else _fetch_income_sina
+    done = {"n": 0}
 
-    for i, (symbol, fetch_key) in enumerate(tqdm(targets, desc=f"income_statement_batch[{source}]")):
-        try:
-            raw = fetch_fn(fetch_key)
-            long_df = to_long(raw, symbol)
-            if long_df.empty:
+    def fetch(item: tuple[str, str]) -> pd.DataFrame:
+        symbol, fetch_key = item
+        raw = fetch_raw(fetch_key)
+        return to_long(raw, symbol)
+
+    def on_result(item: tuple[str, str], long_df: pd.DataFrame | None, err: BaseException | None) -> None:
+        symbol, _key = item
+        done["n"] += 1
+        if err is not None:
+            stats["failed"] += 1
+            stats["failed_symbols"].append(symbol)
+            with write_session() as conn:
+                conn.execute(
+                    "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
+                    ["sync_income_statement", symbol, "failed", f"{type(err).__name__}: {str(err)[:280]}"],
+                )
+            logger.warning("%s 利润表抓取失败，已记录，跳过: %s", symbol, err)
+            return
+        with write_session() as conn:
+            if long_df is None or long_df.empty:
                 stats["empty"] += 1
             else:
                 n = _upsert_income_statement(conn, long_df)
@@ -235,26 +250,22 @@ def sync_income_statement_batch(
                 stats["ok"] += 1
             conn.execute(
                 "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
-                ["sync_income_statement", symbol, "success", f"source={source} rows={len(long_df)}"],
+                ["sync_income_statement", symbol, "success", f"source={source} rows={0 if long_df is None else len(long_df)}"],
             )
-        except (FetchFailedError, Exception) as exc:  # noqa: BLE001
-            stats["failed"] += 1
-            stats["failed_symbols"].append(symbol)
-            conn.execute(
-                "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
-                ["sync_income_statement", symbol, "failed", f"{type(exc).__name__}: {str(exc)[:280]}"],
-            )
-            logger.warning("%s 利润表抓取失败，已记录，跳过: %s", symbol, exc)
-
-        if (i + 1) % checkpoint_size == 0:
+        if done["n"] % checkpoint_size == 0:
             logger.info(
                 "进度 %d/%d: ok=%d empty=%d failed=%d rows=%d",
-                i + 1, len(targets), stats["ok"], stats["empty"], stats["failed"], stats["rows_written"],
+                done["n"], len(targets), stats["ok"], stats["empty"], stats["failed"], stats["rows_written"],
             )
 
-        polite_sleep()
-
-    conn.close()
+    map_fetch_then_write(
+        targets,
+        fetch,
+        on_result,
+        workers=1 if source == "tushare" else None,
+        desc=f"income_statement_batch[{source}]",
+        limiter=tushare_limiter() if source == "tushare" else None,
+    )
     logger.info("利润表绝对值批量同步完成: %s", stats)
     return stats
 

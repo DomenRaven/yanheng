@@ -6,7 +6,11 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 import duckdb
 
@@ -15,6 +19,34 @@ from common.config import get_config, resolve_path
 # 并行旁路库：设置后所有 ingestion 写入该文件，不碰正在被占用的主库。
 _DB_PATH_ENV = "STOCK_QUANT_DB"
 _SIDECAR_LOCK = "data/SIDECAR_PARALLEL.lock"
+
+# Windows 上 DuckDB 写者对 .duckdb 加独占锁，只读连接同样打不开（2026-08-26 用真实
+# 锁文件验证）。因此：写入方必须在 HTTP 等待期间关掉连接；打开方遇到锁则重试。
+# 放弃 sidecar 双库：合并回主库复杂，Phase 0.5 已有过旁路库编排的历史包袱。
+# 进程内可多线程同时 HTTP，但所有 DuckDB 打开必须经过 write_session 的锁。
+_WRITE_LOCK = threading.Lock()
+_CONNECT_RETRY_SLEEP = 0.4
+_CONNECT_RETRIES_WRITE = 50  # ~20s，覆盖 Streamlit 一页查询或一次建议生成里较短的持锁
+_CONNECT_RETRIES_READ = 8
+
+
+class WarehouseBusyError(RuntimeError):
+    """DuckDB 文件被其他进程占用，重试耗尽后仍无法打开。"""
+
+
+def _is_lock_error(exc: BaseException) -> bool:
+    text = str(exc)
+    hints = (
+        "另一个程序正在使用此文件",
+        "being used by another process",
+        "used by another process",
+        "进程无法访问",
+        "Could not set lock",
+        "Conflicting lock",
+        "Cannot open file",
+        "无法打开文件",
+    )
+    return any(h in text for h in hints)
 
 _SCHEMA_SQL = """
 -- 股票池：全市场股票基础信息与状态标记
@@ -399,6 +431,50 @@ CREATE TABLE IF NOT EXISTS advice_log (
     PRIMARY KEY (advice_id)
 );
 
+-- Phase 5 本机模拟盘（与 positions 手动实盘分离，见 9.16 需求 M14）
+CREATE TABLE IF NOT EXISTS paper_account (
+    account_id    VARCHAR NOT NULL,
+    template_id   VARCHAR NOT NULL,   -- practice_100k | live_prep_10k
+    initial_cash  DOUBLE NOT NULL,
+    created_at    TIMESTAMP DEFAULT current_timestamp,
+    note          VARCHAR,
+    PRIMARY KEY (account_id)
+);
+
+CREATE TABLE IF NOT EXISTS paper_cash (
+    account_id    VARCHAR NOT NULL,
+    cash_cny      DOUBLE NOT NULL,
+    updated_at    TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (account_id)
+);
+
+CREATE TABLE IF NOT EXISTS paper_positions (
+    account_id    VARCHAR NOT NULL,
+    symbol        VARCHAR NOT NULL,
+    shares        DOUBLE NOT NULL,
+    avg_cost      DOUBLE NOT NULL,
+    opened_at     DATE NOT NULL,
+    updated_at    TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (account_id, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS paper_trades (
+    trade_id      VARCHAR NOT NULL,
+    account_id    VARCHAR NOT NULL,
+    advice_id     VARCHAR,
+    symbol        VARCHAR NOT NULL,
+    side          VARCHAR NOT NULL,   -- buy | sell
+    shares        DOUBLE NOT NULL,
+    price         DOUBLE NOT NULL,
+    notional      DOUBLE NOT NULL,
+    fees          DOUBLE NOT NULL,
+    trade_date    DATE NOT NULL,
+    source        VARCHAR NOT NULL DEFAULT 'sim',  -- sim | user_confirmed_live
+    reject_reason VARCHAR,
+    created_at    TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (trade_id)
+);
+
 -- 抓取任务日志：用于断点续传、失败重试队列与运行审计
 CREATE TABLE IF NOT EXISTS sync_log (
     task_name   VARCHAR NOT NULL,
@@ -420,8 +496,61 @@ def get_db_path() -> Path:
     return db_path
 
 
-def get_connection() -> duckdb.DuckDBPyConnection:
-    return duckdb.connect(str(get_db_path()))
+class _ConnProxy:
+    """给 UI 连接挂只读标记。DuckDBPyConnection 不允许任意属性，不能直接 setattr。"""
+
+    __slots__ = ("_raw", "_yanheng_read_only")
+
+    def __init__(self, raw: duckdb.DuckDBPyConnection, read_only: bool) -> None:
+        self._raw = raw
+        self._yanheng_read_only = read_only
+
+    def close(self) -> None:
+        self._raw.close()
+
+    def __getattr__(self, name: str):
+        return getattr(self._raw, name)
+
+
+def get_connection(
+    *,
+    read_only: bool = False,
+    retries: int | None = None,
+) -> duckdb.DuckDBPyConnection:
+    """打开仓库。默认写模式；遇文件锁时重试，耗尽后抛 WarehouseBusyError。
+
+    写入进程请用 write_session()：HTTP 等待期间不要一直握着连接。
+    """
+    path = str(get_db_path())
+    attempts = retries if retries is not None else (
+        _CONNECT_RETRIES_READ if read_only else _CONNECT_RETRIES_WRITE
+    )
+    last_err: BaseException | None = None
+    for _attempt in range(max(1, attempts)):
+        try:
+            return duckdb.connect(path, read_only=read_only)
+        except Exception as exc:  # noqa: BLE001 - 要识别 Windows/DuckDB 的锁错误再决定是否重试
+            last_err = exc
+            if not _is_lock_error(exc):
+                raise
+            if _attempt + 1 < max(1, attempts):
+                time.sleep(_CONNECT_RETRY_SLEEP)
+    raise WarehouseBusyError(
+        f"无法打开数据仓库 {path}：正被其他进程占用"
+        f"（DuckDB 在 Windows 下写者独占文件，已重试 {attempts} 次）。"
+    ) from last_err
+
+
+def is_read_only(conn: object) -> bool:
+    return bool(getattr(conn, "_yanheng_read_only", False))
+
+
+def get_ui_connection() -> object:
+    """Streamlit 用：先短重试写连接；仍锁则尝试只读（多数 Windows 场景只读也会失败）。"""
+    try:
+        return _ConnProxy(get_connection(read_only=False, retries=_CONNECT_RETRIES_READ), False)
+    except WarehouseBusyError:
+        return _ConnProxy(get_connection(read_only=True, retries=4), True)
 
 
 def sidecar_parallel_active() -> bool:
@@ -439,6 +568,12 @@ _MIGRATIONS_SQL = [
     "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS name VARCHAR",
     "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS plain_summary VARCHAR",
     "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS price_levels_json VARCHAR",
+    "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS size_shares DOUBLE",
+    "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS est_amount_cny DOUBLE",
+    "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS size_pct_nav DOUBLE",
+    "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS max_loss_cny DOUBLE",
+    "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS horizon_days INTEGER",
+    "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS exec_date DATE",
 ]
 
 
@@ -447,11 +582,30 @@ def init_schema(conn: duckdb.DuckDBPyConnection | None = None) -> None:
     if conn is None:
         conn = get_connection()
     try:
+        if is_read_only(conn):
+            return
         conn.execute(_SCHEMA_SQL)
         for stmt in _MIGRATIONS_SQL:
             conn.execute(stmt)
     finally:
         if own_conn:
+            conn.close()
+
+
+@contextmanager
+def write_session(*, init: bool = False) -> Iterator[duckdb.DuckDBPyConnection]:
+    """短连接：打开 → 读写 → 立刻关闭。HTTP/sleep 期间不要进入这个 with。
+
+    进程内多条抓取线程可以同时打网络，但打开 DuckDB 必须排队（Windows 独占锁）。
+    不要在这个 with 里做 HTTP。不要绕过本函数在工作线程里 get_connection()。
+    """
+    with _WRITE_LOCK:
+        conn = get_connection()
+        try:
+            if init:
+                init_schema(conn)
+            yield conn
+        finally:
             conn.close()
 
 

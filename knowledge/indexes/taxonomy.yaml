@@ -37,6 +37,7 @@ dimensions:
     docs:
       - docs/02-经典理论/01-有效市场与行为金融.md
       - docs/02-经典理论/05-交易心理学专论.md
+      - docs/02-经典理论/07-散户投资者实证.md
 
   - id: game
     name_zh: 博弈面
@@ -55,6 +56,7 @@ dimensions:
       - docs/03-量化方法/12-强化学习与决策类方法.md
       - docs/03-量化方法/13-生成式与Agent前沿.md
       - docs/03-量化方法/14-量化MLOps与模型生命周期.md
+      - docs/03-量化方法/15-日频信号与次日执行.md
 
   - id: valuation
     name_zh: 估值与财务分析面
@@ -103,7 +105,9 @@ dimensions:
   - id: institutional_deepening
     name_zh: A股制度深化
     docs: docs/01-基础概念/08-A股交易制度深化.md
-    children: [registration_system, delisting, beijing_exchange, ipo_subscription, price_limit_tiers]
+    children_docs:
+      - docs/01-基础概念/09-A股费用与可成交性.md
+    children: [registration_system, delisting, beijing_exchange, ipo_subscription, price_limit_tiers, fees_tradability]
 
 indicator_families:
   - id: volume
@@ -142,6 +146,12 @@ risk_deepening:
   - id: leverage_margin
     name_zh: 杠杆与保证金管理
     docs: docs/04-风险管理/09-杠杆与保证金管理.md
+  - id: risk_budget_lot
+    name_zh: 以损定仓与A股手数
+    docs: docs/04-风险管理/10-以损定仓与A股手数.md
+  - id: paper_account
+    name_zh: 纸面账户与影子交易
+    docs: docs/04-风险管理/11-纸面账户与影子交易.md
 
 valuation_methods:
   - id: dcf_ddm
@@ -207,3 +217,28 @@ quant_deepening:
   - id: quant_mlops
     name: 量化MLOps与模型生命周期
     docs: docs/03-量化方法/14-量化MLOps与模型生命周期.md
+  - id: signal_next_day_exec
+    name: 日频信号与次日执行
+    docs: docs/03-量化方法/15-日频信号与次日执行.md
+
+product_design:
+  - id: closed_loop
+    name_zh: 投研闭环架构
+    docs: docs/07-产品设计启示/01-投研闭环架构.md
+  - id: advice_engine_schema
+    name_zh: 场景化建议引擎
+    docs: docs/07-产品设计启示/02-场景化建议引擎.md
+  - id: mvp_roadmap
+    name_zh: MVP路线图
+    docs: docs/07-产品设计启示/03-MVP路线图.md
+  - id: retail_workflow_paper
+    name_zh: 散户工作流与纸面账户
+    docs: docs/07-产品设计启示/04-散户工作流与纸面账户.md
+
+literature:
+  - id: retail_decision_chain_extracts
+    name_zh: 散户决策链原文摘录
+    docs: docs/99-参考文献/notes/2026-09-16-散户决策链原文摘录.md
+  - id: paper_cache_manifest
+    name_zh: 本地论文缓存清单
+    docs: docs/99-参考文献/papers/README.md

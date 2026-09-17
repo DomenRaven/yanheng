@@ -13,6 +13,7 @@ from __future__ import annotations
 import functools
 import logging
 import random
+import threading
 import time
 from typing import Any, Callable, TypeVar
 
@@ -72,9 +73,58 @@ def retry_on_failure(
     return decorator
 
 
+class IntervalLimiter:
+    """进程内共享的最小间隔。多线程并发请求时，发车间隔仍不低于配置，不是每线程各睡一遍。"""
+
+    def __init__(self, min_interval: float, max_interval: float) -> None:
+        if min_interval < 0 or max_interval < min_interval:
+            raise ValueError("invalid limiter interval")
+        self.min_interval = min_interval
+        self.max_interval = max_interval
+        self._lock = threading.Lock()
+        self._next_mono = 0.0
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next_mono)
+            gap = random.uniform(self.min_interval, self.max_interval)
+            self._next_mono = slot + gap
+            sleep_for = slot - now
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+
+
+_DEFAULT_LIMITER: IntervalLimiter | None = None
+_TUSHARE_LIMITER: IntervalLimiter | None = None
+_LIMITER_LOCK = threading.Lock()
+
+
+def default_limiter() -> IntervalLimiter:
+    global _DEFAULT_LIMITER
+    with _LIMITER_LOCK:
+        if _DEFAULT_LIMITER is None:
+            cfg = get_config().get("ingestion", {}).get("rate_limit", {})
+            _DEFAULT_LIMITER = IntervalLimiter(
+                float(cfg.get("min_interval_seconds", 0.35)),
+                float(cfg.get("max_interval_seconds", 0.8)),
+            )
+        return _DEFAULT_LIMITER
+
+
+def tushare_limiter() -> IntervalLimiter:
+    """2000 积分档约 200 次/分钟。间隔 0.35s ≈ 171 次/分钟，留余量。Tushare 客户端非线程安全，并发步仍用 workers=1。"""
+    global _TUSHARE_LIMITER
+    with _LIMITER_LOCK:
+        if _TUSHARE_LIMITER is None:
+            cfg = get_config().get("ingestion", {}).get("tushare_rate_limit", {})
+            _TUSHARE_LIMITER = IntervalLimiter(
+                float(cfg.get("min_interval_seconds", 0.35)),
+                float(cfg.get("max_interval_seconds", 0.45)),
+            )
+        return _TUSHARE_LIMITER
+
+
 def polite_sleep() -> None:
-    """在批量请求之间随机休眠，降低触发数据源限流/反爬的概率。"""
-    cfg = get_config().get("ingestion", {}).get("rate_limit", {})
-    lo = cfg.get("min_interval_seconds", 0.3)
-    hi = cfg.get("max_interval_seconds", 0.8)
-    time.sleep(random.uniform(lo, hi))
+    """顺序循环用。并发抓取走 IntervalLimiter.wait，不要两个都调。"""
+    default_limiter().wait()

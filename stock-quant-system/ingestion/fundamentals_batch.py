@@ -27,11 +27,11 @@ import logging
 
 import akshare as ak
 import pandas as pd
-from tqdm import tqdm
 
 from common.config import get_config
-from common.db import get_connection, init_schema
-from common.http_retry import FetchFailedError, polite_sleep, retry_on_failure
+from common.db import write_session
+from common.http_retry import retry_on_failure, tushare_limiter
+from common.parallel_fetch import map_fetch_then_write
 from common.tushare_client import get_pro_api, to_ts_code
 
 logger = logging.getLogger("ingestion.fundamentals_batch")
@@ -121,10 +121,8 @@ def sync_fundamentals_batch(
     history_start_year = get_config()["ingestion"]["history_start_date"][:4]
     checkpoint_size = get_config()["ingestion"].get("checkpoint_batch_size", 50)
 
-    conn = get_connection()
-    init_schema(conn)
-
-    targets = _get_sync_targets(conn, symbols)
+    with write_session(init=True) as conn:
+        targets = _get_sync_targets(conn, symbols)
     if skip_existing:
         before = len(targets)
         targets = [(sym, last) for sym, last in targets if last is None]
@@ -144,44 +142,52 @@ def sync_fundamentals_batch(
         "rows_written": 0,
         "failed_symbols": [],
     }
+    done = {"n": 0}
 
-    for i, (symbol, last_report_date) in enumerate(tqdm(targets, desc="fundamentals_batch")):
+    def fetch(item: tuple[str, dt.date | None]) -> pd.DataFrame:
+        symbol, last_report_date = item
         start_year = str(last_report_date.year) if last_report_date else history_start_year
-        try:
-            raw = _fetch_financial_indicator(symbol, start_year)
-            long_df = _to_long_format(raw, symbol)
-            if last_report_date:
-                long_df = long_df[long_df["report_date"] > pd.Timestamp(last_report_date)]
+        raw = _fetch_financial_indicator(symbol, start_year)
+        long_df = _to_long_format(raw, symbol)
+        if last_report_date:
+            long_df = long_df[long_df["report_date"] > pd.Timestamp(last_report_date)]
+        return long_df
 
-            if long_df.empty:
-                stats["no_new_data"] += 1
-            else:
-                n = _upsert_fundamentals(conn, long_df)
-                stats["rows_written"] += n
-                stats["ok"] += 1
-
-            conn.execute(
-                "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
-                ["sync_fundamentals_batch", symbol, "success", f"rows={len(long_df)}"],
-            )
-        except FetchFailedError as exc:
+    def on_result(
+        item: tuple[str, dt.date | None],
+        long_df: pd.DataFrame | None,
+        err: BaseException | None,
+    ) -> None:
+        symbol, _last = item
+        done["n"] += 1
+        if err is not None:
             stats["failed"] += 1
             stats["failed_symbols"].append(symbol)
-            conn.execute(
-                "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
-                ["sync_fundamentals_batch", symbol, "failed", str(exc)[:300]],
-            )
-            logger.warning("%s 财务数据抓取失败，已记录，跳过: %s", symbol, exc)
-
-        if (i + 1) % checkpoint_size == 0:
+            with write_session() as conn:
+                conn.execute(
+                    "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
+                    ["sync_fundamentals_batch", symbol, "failed", str(err)[:300]],
+                )
+            logger.warning("%s 财务数据抓取失败，已记录，跳过: %s", symbol, err)
+        else:
+            with write_session() as conn:
+                if long_df is None or long_df.empty:
+                    stats["no_new_data"] += 1
+                else:
+                    n = _upsert_fundamentals(conn, long_df)
+                    stats["rows_written"] += n
+                    stats["ok"] += 1
+                conn.execute(
+                    "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
+                    ["sync_fundamentals_batch", symbol, "success", f"rows={0 if long_df is None else len(long_df)}"],
+                )
+        if done["n"] % checkpoint_size == 0:
             logger.info(
                 "进度 %d/%d: ok=%d no_new=%d failed=%d rows=%d",
-                i + 1, len(targets), stats["ok"], stats["no_new_data"], stats["failed"], stats["rows_written"],
+                done["n"], len(targets), stats["ok"], stats["no_new_data"], stats["failed"], stats["rows_written"],
             )
 
-        polite_sleep()
-
-    conn.close()
+    map_fetch_then_write(targets, fetch, on_result, desc="fundamentals_batch")
     logger.info("批量财务数据同步完成: %s", stats)
     return stats
 
@@ -212,51 +218,60 @@ def _tushare_fina_to_long(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
 
 def sync_fundamentals_bse_tushare(symbols: list[str] | None = None, limit: int | None = None) -> dict:
     """补北交所缺口（见模块docstring）：Tushare fina_indicator -> fundamentals 同一张表。"""
-    conn = get_connection()
-    init_schema(conn)
-    where = "WHERE is_delisted = FALSE AND exchange = 'bj'"
-    params: list = []
-    if symbols:
-        placeholders = ",".join(["?"] * len(symbols))
-        where += f" AND symbol IN ({placeholders})"
-        params = list(symbols)
-    rows = conn.execute(f"SELECT symbol, exchange FROM universe {where}", params).fetchall()
+    with write_session(init=True) as conn:
+        where = "WHERE is_delisted = FALSE AND exchange = 'bj'"
+        params: list = []
+        if symbols:
+            placeholders = ",".join(["?"] * len(symbols))
+            where += f" AND symbol IN ({placeholders})"
+            params = list(symbols)
+        rows = conn.execute(f"SELECT symbol, exchange FROM universe {where}", params).fetchall()
     targets = [(sym, to_ts_code(sym, exch)) for sym, exch in rows]
     if limit:
         targets = targets[:limit]
 
     stats = {"ok": 0, "empty": 0, "failed": 0, "rows_written": 0, "failed_symbols": []}
-    for i, (symbol, ts_code) in enumerate(tqdm(targets, desc="sync_fundamentals_bse_tushare")):
-        try:
-            raw = _fetch_fina_indicator_tushare(ts_code)
-            long_df = _tushare_fina_to_long(raw, symbol)
-            if long_df.empty:
+    done = {"n": 0}
+
+    def fetch(item: tuple[str, str]) -> pd.DataFrame:
+        symbol, ts_code = item
+        raw = _fetch_fina_indicator_tushare(ts_code)
+        return _tushare_fina_to_long(raw, symbol)
+
+    def on_result(item: tuple[str, str], long_df: pd.DataFrame | None, err: BaseException | None) -> None:
+        symbol, _ts = item
+        done["n"] += 1
+        if err is not None:
+            stats["failed"] += 1
+            stats["failed_symbols"].append(symbol)
+            with write_session() as conn:
+                conn.execute(
+                    "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
+                    ["sync_fundamentals_bse_tushare", symbol, "failed", f"{type(err).__name__}: {str(err)[:280]}"],
+                )
+            logger.warning("%s 北交所fundamentals(Tushare)抓取失败: %s", symbol, err)
+            return
+        with write_session() as conn:
+            if long_df is None or long_df.empty:
                 stats["empty"] += 1
             else:
                 stats["rows_written"] += _upsert_fundamentals(conn, long_df)
                 stats["ok"] += 1
             conn.execute(
                 "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
-                ["sync_fundamentals_bse_tushare", symbol, "success", f"rows={len(long_df)}"],
+                ["sync_fundamentals_bse_tushare", symbol, "success", f"rows={0 if long_df is None else len(long_df)}"],
             )
-        except Exception as exc:  # noqa: BLE001
-            stats["failed"] += 1
-            stats["failed_symbols"].append(symbol)
-            conn.execute(
-                "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
-                ["sync_fundamentals_bse_tushare", symbol, "failed", f"{type(exc).__name__}: {str(exc)[:280]}"],
-            )
-            logger.warning("%s 北交所fundamentals(Tushare)抓取失败: %s", symbol, exc)
+        if done["n"] % 50 == 0:
+            logger.info("sync_fundamentals_bse_tushare 进度 %d/%d: %s", done["n"], len(targets), stats)
 
-        if (i + 1) % 50 == 0:
-            logger.info("sync_fundamentals_bse_tushare 进度 %d/%d: %s", i + 1, len(targets), stats)
-        polite_sleep()
-
-    conn.execute(
-        "INSERT INTO sync_log (task_name, status, message) VALUES (?, ?, ?)",
-        ["sync_fundamentals_bse_tushare", "success", str(stats)[:500]],
+    map_fetch_then_write(
+        targets, fetch, on_result, workers=1, desc="sync_fundamentals_bse_tushare", limiter=tushare_limiter()
     )
-    conn.close()
+    with write_session() as conn:
+        conn.execute(
+            "INSERT INTO sync_log (task_name, status, message) VALUES (?, ?, ?)",
+            ["sync_fundamentals_bse_tushare", "success", str(stats)[:500]],
+        )
     logger.info("sync_fundamentals_bse_tushare 完成: %s", stats)
     return stats
 

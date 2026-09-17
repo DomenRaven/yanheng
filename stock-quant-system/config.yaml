@@ -28,12 +28,33 @@ ingestion:
     jitter_seconds: 1.0
 
   rate_limit:
-    # 单只股票请求之间的最小间隔（秒），避免触发数据源反爬限制
+    # 全局发车间隔（多线程共用一把限速器，不是每个工人各睡一遍）
     min_interval_seconds: 0.35
     max_interval_seconds: 0.8
 
+  # 新浪/东财/巨潮 HTTP 工人数。Tushare 在代码里固定 workers=1（客户端非线程安全）。
+  http_workers: 6
+
+  tushare_rate_limit:
+    min_interval_seconds: 0.35
+    max_interval_seconds: 0.45
+
   # 每批次处理多少只股票后，写一次 checkpoint（支持断点续传）
   checkpoint_batch_size: 50
+
+  # 数据更新引擎：并发 fetch + 有界队列 + 专用写线程（见 docs/ingestion-engine-requirements.md）
+  pipeline:
+    async_write: true
+    # 默认 http_workers * 2；队列满时 fetch 阻塞，防止全量任务堆积 DataFrame
+    # write_queue_depth: 12
+    write_batch_size: 1
+
+  reference_data:
+    disclosure:
+      # 巨潮失败时自动回退 Tushare disclosure_date（按报告期 end_date 一次全市场）
+      prefer_tushare: false
+      # 连续失败多少期后熔断，避免 E2E/夜间任务空转数小时
+      consecutive_fail_abort: 6
 
 # ---------- 股票池过滤 ----------
 universe:
@@ -50,8 +71,28 @@ model:
   retrain_cadence: weekly     # 已与用户确认：每周末重训
   registry_dir: "mlops/registry"
 
+# ---------- Phase 5 模拟盘（验收口径见 docs/phase5-development.md） ----------
+paper_trading:
+  # 相对开盘价的简化滑点（bp）；UI 须标注非真实盘口
+  slippage_bp: 10
+  price_adjust: qfq
+  risk_fraction: 0.01
+  max_single_weight: 0.15
+  min_cash_buffer: 0.10
+  max_concurrent_positions: 3
+  horizon_days: 20
+  default_template_for_advice: live_prep_10k
+  templates:
+    practice_100k:
+      initial_cash_cny: 100000.0
+    live_prep_10k:
+      initial_cash_cny: 10000.0
+
 # ---------- LLM 解释层 ----------
 # 默认通义千问（阿里云百炼 DashScope，OpenAI 兼容接口）。可改为 deepseek。
+# 换 DeepSeek 不能让模型「知道今天」：双方都是聊天模型，没有实时日历。
+# 「今天」由 explain_assistant 注入本机日期；新闻由 llm/news_fetch 即时抓取。
+# 不开通义 extra_body.enable_search：兼容接口不返回搜索来源，会破坏翻译层边界。
 llm:
   provider: dashscope
   api_key_env: "DASHSCOPE_API_KEY"

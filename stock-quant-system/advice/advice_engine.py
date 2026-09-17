@@ -75,7 +75,27 @@ def _plain_summary(action: str, **kw) -> str:
         return "当前持仓比例和系统建议的最优比例差得有点多，可以考虑往建议方向微调，不是紧急操作。"
     if action == "open":
         rank = kw.get("rank")
-        return f"模型在全市场里把它排到了第{int(rank)}名（越靠前越被看好），如果感兴趣可以进一步研究是否建仓，仓位大小自己把控。" if rank else "模型比较看好，可进一步研究。"
+        sh = kw.get("size_shares")
+        if sh and int(sh) >= 100:
+            amt = kw.get("est_amount_cny") or 0
+            stop = kw.get("stop")
+            ml = kw.get("max_loss")
+            head = (
+                f"模型在全市场排第{int(rank)}名，建议以损定仓买入约 {int(sh)} 股"
+                f"（约 ¥{float(amt):.0f}）"
+                if rank
+                else f"建议以损定仓买入约 {int(sh)} 股（约 ¥{float(amt):.0f}）"
+            )
+            if stop is not None:
+                head += f"，参考止损 ¥{float(stop):.2f}"
+            if ml is not None:
+                head += f"，若触发止损最大亏约 ¥{float(ml):.0f}"
+            return head + "。"
+        return (
+            f"模型在全市场里把它排到了第{int(rank)}名（越靠前越被看好），若感兴趣可进一步研究是否建仓。"
+            if rank
+            else "模型比较看好，可进一步研究。"
+        )
     if action == "hold":
         if kw.get("rank_ok"):
             return "模型仍然看好这只股票，暂时没有需要操作的地方，正常持有观察就好。"
@@ -125,6 +145,7 @@ def build_advice_for_watchlist(scan_top: pd.DataFrame) -> list[dict]:
             "advice_id": str(uuid.uuid4()),
             "symbol": row["symbol"],
             "name": row.get("name"),
+            "rank": int(row["rank"]) if pd.notna(row.get("rank")) else None,
             "action": action,
             "confidence": confidence,
             "price_levels": price_levels(float(last_close) if pd.notna(last_close) else None),
@@ -263,7 +284,158 @@ def apply_rebalance_overlay(
     return out
 
 
+def _advice_equity_and_cash(conn) -> tuple[float, float]:
+    from advice.paper_broker import mark_to_market_nav
+
+    row = conn.execute(
+        "SELECT account_id FROM paper_account ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    if row:
+        nav = mark_to_market_nav(conn, row[0], dt.date.today())
+        return float(nav["nav_cny"]), float(nav["cash_cny"])
+    from advice.position_sizing import default_equity_cny, sizing_params
+
+    eq = default_equity_cny()
+    buf = sizing_params()["min_cash_buffer"]
+    return eq, eq * (1.0 - buf)
+
+
+def enrich_cards_with_sizing(
+    conn,
+    cards: list[dict],
+    signal_date: dt.date,
+    position_summary: pd.DataFrame,
+    held_symbols: set[str],
+    exchange_by_symbol: dict[str, str],
+) -> list[dict]:
+    """Phase 5 阶段 B：为卡片填充股数/金额/失效条件；买不起 1 手则 open→watch。"""
+    from advice.entry_rules import next_trade_date
+    from advice.paper_broker import _exchange_for
+    from advice.position_sizing import (
+        actionable_invalid_if_open,
+        actionable_invalid_if_position,
+        compute_open_size,
+        compute_sell_shares,
+        sizing_params,
+    )
+
+    p = sizing_params()
+    exec_d = next_trade_date(conn, signal_date)
+    exec_iso = exec_d.isoformat() if exec_d else None
+    equity, cash = _advice_equity_and_cash(conn)
+
+    shares_map: dict[str, float] = {}
+    weight_map: dict[str, float] = {}
+    if not position_summary.empty:
+        agg = position_summary.groupby("symbol", as_index=False).agg(
+            shares=("shares", "sum"),
+            market_value=("market_value", "sum"),
+        )
+        total_mv = float(agg["market_value"].sum())
+        for _, r in agg.iterrows():
+            shares_map[r["symbol"]] = float(r["shares"])
+            weight_map[r["symbol"]] = (
+                float(r["market_value"]) / total_mv if total_mv > 0 else 0.0
+            )
+
+    rank_by_symbol: dict[str, float] = {}
+    for c in cards:
+        for reason in c.get("reasons") or []:
+            if reason.get("type") == "model" and "排名第" in reason.get("detail", ""):
+                try:
+                    tail = reason["detail"].split("排名第")[1]
+                    rank_by_symbol[c["symbol"]] = float(tail.split("名")[0])
+                except (IndexError, ValueError):
+                    pass
+
+    out: list[dict] = []
+    for card in cards:
+        c = dict(card)
+        c["horizon_days"] = p["horizon_days"]
+        c["exec_date"] = exec_iso
+        action = c["action"]
+        sym = c["symbol"]
+        pl = c.get("price_levels") or {}
+        last_close = pl.get("last_close")
+        if last_close is None or (isinstance(last_close, float) and pd.isna(last_close)):
+            out.append(c)
+            continue
+        price = float(last_close)
+        exchange = exchange_by_symbol.get(sym) or _exchange_for(conn, sym)
+
+        if action == "open":
+            if len(held_symbols) >= p["max_concurrent_positions"]:
+                c["action"] = "watch"
+                c["confidence"] = 0.0
+                c["risks"] = list(c.get("risks") or []) + [
+                    f"已达最大同时持仓数 {p['max_concurrent_positions']}，暂不建议新开仓"
+                ]
+                c["plain_summary"] = _plain_summary("watch")
+                out.append(c)
+                continue
+            stop = pl.get("stop_loss_price")
+            if stop is None:
+                out.append(c)
+                continue
+            sz = compute_open_size(equity, price, float(stop), exchange, cash_cny=cash)
+            if sz.shares < 100:
+                c["action"] = "watch"
+                c["confidence"] = 0.0
+                c["risks"] = list(c.get("risks") or []) + [sz.reason or "以损定仓后无法买入 1 手"]
+                c["plain_summary"] = _plain_summary("watch")
+                c["size_shares"] = 0
+            else:
+                c["size_shares"] = sz.shares
+                c["est_amount_cny"] = sz.est_amount_cny
+                c["size_pct_nav"] = sz.size_pct_nav
+                c["max_loss_cny"] = sz.max_loss_cny
+                c["invalid_if"] = actionable_invalid_if_open(pl.get("stop_loss_price"))
+                c["plain_summary"] = _plain_summary(
+                    "open",
+                    rank=c.get("rank") or rank_by_symbol.get(sym),
+                    size_shares=sz.shares,
+                    est_amount_cny=sz.est_amount_cny,
+                    stop=stop,
+                    max_loss=sz.max_loss_cny,
+                )
+        elif action in ("stop_loss", "reduce", "take_profit", "rebalance"):
+            held = shares_map.get(sym, 0.0)
+            w = weight_map.get(sym, 0.0)
+            sz = compute_sell_shares(
+                held, action, equity_cny=equity, price=price, current_weight=w
+            )
+            if sz.shares >= 100:
+                c["size_shares"] = sz.shares
+                c["est_amount_cny"] = sz.est_amount_cny
+                if isinstance(c.get("size_pct_nav"), list):
+                    c["size_pct_nav"] = [round(sz.size_pct_nav, 4), c["size_pct_nav"][1]]
+                else:
+                    c["size_pct_nav"] = sz.size_pct_nav
+            c["invalid_if"] = actionable_invalid_if_position(
+                action,
+                stop_price=pl.get("stop_loss_price"),
+                take_profit_price=pl.get("take_profit_price"),
+            )
+        out.append(c)
+    return out
+
+
+_POSITION_ACTIONS = {"stop_loss", "reduce", "take_profit", "rebalance", "hold"}
 _PRIORITY_ORDER = ["stop_loss", "reduce", "take_profit", "rebalance", "open", "hold", "watch"]
+
+
+def cards_for_digest(cards: list[dict], held_symbols: set[str]) -> list[dict]:
+    """首页速览用：持仓类动作（止损/减仓/持有等）只保留「当前仍持有」的股票。
+    平仓后即使还没再点生成，旧风控卡片也不应继续催你操作已经卖掉的票。"""
+    out = []
+    for c in cards:
+        action = c.get("action")
+        if action in _POSITION_ACTIONS:
+            if c.get("symbol") in held_symbols:
+                out.append(c)
+        else:
+            out.append(c)
+    return out
 
 
 def build_priority_digest(position_cards: list[dict], watchlist_cards: list[dict], top_n: int = 8) -> list[dict]:
@@ -291,6 +463,13 @@ def build_priority_digest(position_cards: list[dict], watchlist_cards: list[dict
 
 
 def persist_advice_cards(conn, cards: list[dict], as_of_date: str, model_run_id: str | None = None) -> None:
+    """同一交易日的建议是一份快照：先删掉该日全部旧行，再写入本次结果。
+
+    只按 (symbol, as_of) upsert 不够——平仓后的股票不会出现在新卡片里，旧的止损/减仓
+    行会留在库里，首页「今日决策速览」就会只叠加、不消失（2026-08-26 第二轮人工测试复现）。
+    """
+    as_of = pd.Timestamp(as_of_date).date()
+    conn.execute("DELETE FROM advice_log WHERE as_of = ?", [as_of])
     if not cards:
         return
     from common.tushare_client import upsert
@@ -299,7 +478,7 @@ def persist_advice_cards(conn, cards: list[dict], as_of_date: str, model_run_id:
     for c in cards:
         rows.append({
             "advice_id": c["advice_id"],
-            "as_of": pd.Timestamp(as_of_date).date(),
+            "as_of": as_of,
             "symbol": c["symbol"],
             "name": c.get("name"),
             "action": c["action"],
@@ -310,12 +489,20 @@ def persist_advice_cards(conn, cards: list[dict], as_of_date: str, model_run_id:
             "risks_json": json.dumps(c.get("risks", []), ensure_ascii=False),
             "invalid_if_json": json.dumps(c.get("invalid_if", []), ensure_ascii=False),
             "model_run_id": model_run_id,
+            "size_shares": c.get("size_shares"),
+            "est_amount_cny": c.get("est_amount_cny"),
+            "size_pct_nav": (
+                c["size_pct_nav"][1]
+                if isinstance(c.get("size_pct_nav"), list) and len(c["size_pct_nav"]) > 1
+                else c.get("size_pct_nav")
+            ),
+            "max_loss_cny": c.get("max_loss_cny"),
+            "horizon_days": c.get("horizon_days"),
+            "exec_date": (
+                pd.Timestamp(c["exec_date"]).date() if c.get("exec_date") else None
+            ),
         })
     df = pd.DataFrame(rows)
-    # key用(symbol, as_of)而不是advice_id：同一交易日内用户多次点「刷新建议」时，
-    # 应该覆盖同一天的旧建议而不是无限堆积重复记录——advice_id仍然每次生成新的，
-    # 只是不作为去重键，避免`advice_log`因反复刷新而膨胀出大量同symbol同日的
-    # 冗余历史（2026-08-26测试「历史建议复盘」页时实测发现的问题，不是猜测）。
     upsert(conn, "advice_log", ["symbol", "as_of"], df)
 
 
@@ -346,6 +533,12 @@ def load_latest_advice_cards(conn) -> tuple[str | None, list[dict]]:
             "risks": json.loads(r["risks_json"]) if r.get("risks_json") else [],
             "invalid_if": json.loads(r["invalid_if_json"]) if r.get("invalid_if_json") else [],
             "disclaimer": "仅供研究辅助，不构成投资建议",
+            "size_shares": r.get("size_shares"),
+            "est_amount_cny": r.get("est_amount_cny"),
+            "size_pct_nav": r.get("size_pct_nav"),
+            "max_loss_cny": r.get("max_loss_cny"),
+            "horizon_days": r.get("horizon_days"),
+            "exec_date": str(r["exec_date"]) if pd.notna(r.get("exec_date")) else None,
         })
     return as_of, cards
 
@@ -353,6 +546,7 @@ def load_latest_advice_cards(conn) -> tuple[str | None, list[dict]]:
 def generate_daily_advice(top_n_watchlist: int = 30) -> dict:
     """一站式入口：跑一次掘金扫描 + 读当前持仓 + 生成全部建议卡片 + 落库留痕。
     供 `pages/` Streamlit页面和 `scripts/daily_pipeline.py` 复用，不重复实现。"""
+    from advice.entry_rules import build_tomorrow_todos
     from advice.scanner import run_scan
     from common.db import get_connection, init_schema
     from risk.portfolio_optimizer import suggest_rebalance
@@ -361,6 +555,9 @@ def generate_daily_advice(top_n_watchlist: int = 30) -> dict:
     scan_full, scan_top, trade_date = run_scan(top_n=top_n_watchlist)
     conn = get_connection()
     init_schema(conn)
+    position_cards: list[dict] = []
+    watchlist_cards: list[dict] = []
+    tomorrow_todos: list[dict] = []
     try:
         position_summary = compute_position_summary(conn, str(trade_date))
         concentration = compute_concentration(position_summary)
@@ -379,6 +576,22 @@ def generate_daily_advice(top_n_watchlist: int = 30) -> dict:
                 logger.exception("组合优化再平衡建议计算失败，跳过该覆盖层，不影响其余建议卡片")
 
         all_cards = position_cards + watchlist_cards
+        exchange_map = {}
+        if not scan_full.empty and "exchange" in scan_full.columns:
+            exchange_map = scan_full.set_index("symbol")["exchange"].to_dict()
+        signal_d = pd.Timestamp(trade_date).date()
+        all_cards = enrich_cards_with_sizing(
+            conn,
+            all_cards,
+            signal_d,
+            position_summary,
+            held_symbols,
+            exchange_map,
+        )
+        position_cards = [c for c in all_cards if c["symbol"] in held_symbols]
+        watchlist_cards = [c for c in all_cards if c["symbol"] not in held_symbols]
+        tomorrow_todos = build_tomorrow_todos(all_cards, signal_d, conn, max_items=3)
+
         model_run_id = None
         try:
             with open("mlops/registry/champion.json", encoding="utf-8") as f:
@@ -391,7 +604,12 @@ def generate_daily_advice(top_n_watchlist: int = 30) -> dict:
 
     logger.info("生成建议卡片：持仓相关%d条，观察名单%d条，交易日=%s",
                 len(position_cards), len(watchlist_cards), trade_date)
-    return {"as_of": str(trade_date), "position_cards": position_cards, "watchlist_cards": watchlist_cards}
+    return {
+        "as_of": str(trade_date),
+        "position_cards": position_cards,
+        "watchlist_cards": watchlist_cards,
+        "tomorrow_todos": tomorrow_todos,
+    }
 
 
 if __name__ == "__main__":

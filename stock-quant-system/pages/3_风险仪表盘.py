@@ -7,9 +7,62 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from common.db import get_connection, init_schema
-from common.ui_theme import apply_theme, section_header, term_help
-from risk.portfolio_risk import generate_risk_report
+from common.ui_theme import apply_theme, connect_warehouse, section_header, term_help
+from risk.portfolio_risk import _canon_symbol, generate_risk_report
+
+
+def _row_label(row: pd.Series) -> str:
+    symbol = _canon_symbol(row.get("symbol"))
+    name = row.get("name")
+    if pd.notna(name) and str(name).strip():
+        return f"{symbol} {name}"
+    return symbol
+
+
+def _concentration_bar_figure(conc_df: pd.DataFrame):
+    df = conc_df.copy()
+    df["y_label"] = df.apply(_row_label, axis=1)
+    df = df.sort_values("weight_pct", ascending=True)
+    df["是否超限"] = ["超过15%" if w > 0.15 else "未超限" for w in df["weight_pct"]]
+    fig = px.bar(
+        df,
+        x="weight_pct",
+        y="y_label",
+        orientation="h",
+        color="是否超限",
+        color_discrete_map={"超过15%": "#C62828", "未超限": "#1B5E9E"},
+        text=df["weight_pct"].map(lambda v: f"{v:.1%}"),
+        labels={"weight_pct": "占全部持仓市值的比例", "y_label": ""},
+        title="每只股票占你全部持仓市值的比例（条越长越集中）",
+    )
+    fig.update_traces(textposition="outside", cliponaxis=False)
+    xmax = max(0.22, float(df["weight_pct"].max()) * 1.35)
+    fig.update_layout(
+        xaxis=dict(tickformat=".0%", range=[0, xmax]),
+        yaxis=dict(
+            type="category",
+            categoryorder="array",
+            categoryarray=df["y_label"].tolist(),
+            title="",
+        ),
+        legend_title_text="",
+        height=max(280, 48 * len(df) + 90),
+        margin=dict(l=16, r=72, t=56, b=48),
+    )
+    fig.add_vline(x=0.15, line_dash="dash", line_color="#C62828", annotation_text="15%上限")
+    return fig
+
+
+def _concentration_table(conc_df: pd.DataFrame) -> pd.DataFrame:
+    df = conc_df.copy()
+    df["股票"] = df.apply(_row_label, axis=1)
+    df = df.sort_values("weight_pct", ascending=False)
+    return pd.DataFrame({
+        "股票": df["股票"],
+        "市值": df["market_value"].map(lambda v: f"¥{v:,.0f}" if pd.notna(v) else "—"),
+        "占全部持仓": df["weight_pct"].map(lambda v: f"{v:.1%}"),
+        "是否超限": ["是，建议减仓分散" if w > 0.15 else "否" for w in df["weight_pct"]],
+    })
 
 apply_theme(page_title="风险仪表盘", page_icon="⚠️")
 st.title("⚠️ 组合风险仪表盘")
@@ -18,8 +71,7 @@ st.caption(
     "假设性回撤，不是真实调仓后的回撤——方法边界见 `risk/portfolio_risk.py` 模块docstring。"
 )
 
-conn = get_connection()
-init_schema(conn)
+conn = connect_warehouse()
 try:
     today = dt.date.today().strftime("%Y-%m-%d")
     report = generate_risk_report(conn, today)
@@ -42,28 +94,28 @@ else:
         term_help("VaR")
 
     st.divider()
-    st.subheader("持仓集中度")
+    section_header("持仓集中度", help_term="集中度", level=2)
     conc_df = pd.DataFrame(report["concentration"])
     if not conc_df.empty:
         # 用水平柱图而不是饼图：设计理论库《03_信息图示与数据墨水》引Tufte/Few的规则
         # ——饼图角度差不容易精确比较，超过4片建议一律改水平柱；持仓通常不止4只，
         # 直接统一用柱图，长度比角度更容易读出"谁比谁多多少"。
-        conc_sorted = conc_df.sort_values("weight_pct", ascending=True)
-        fig = px.bar(
-            conc_sorted, x="weight_pct", y="symbol", orientation="h",
-            text=conc_sorted["weight_pct"].map(lambda v: f"{v:.1%}"),
-            labels={"weight_pct": "占持仓市值比例", "symbol": "股票代码"},
-            title="持仓市值占比（按占比排序）",
+        # y 轴必须 type=category：6 位代码在 Plotly 里会被当成数字，纵坐标变成「60万」。
+        fig = _concentration_bar_figure(conc_df)
+        st.caption(
+            "每根横条 = 这只股票市值 ÷ 你全部持仓市值之和。条越长越集中；"
+            "越过红色虚线（15%）就视为单票过重。现金未计入。"
         )
-        fig.update_traces(marker_color="#1B5E9E", textposition="outside")
-        fig.update_layout(xaxis_tickformat=".0%", showlegend=False, height=max(320, 40 * len(conc_sorted)))
-        fig.add_vline(x=0.15, line_dash="dash", line_color="#C62828", annotation_text="15%风控上限")
         st.plotly_chart(fig, use_container_width=True)
+        table = _concentration_table(conc_df)
+        st.dataframe(table, use_container_width=True, hide_index=True)
 
     st.divider()
     st.subheader("逐股票波动率 / VaR")
     vol_df = pd.DataFrame(report["volatility_var_by_symbol"])
     if not vol_df.empty:
+        if "symbol" in vol_df.columns:
+            vol_df["symbol"] = vol_df["symbol"].map(_canon_symbol)
         st.dataframe(vol_df, use_container_width=True, hide_index=True)
 
     st.divider()
@@ -71,8 +123,12 @@ else:
     corr = report.get("correlation_matrix") or {}
     if corr:
         corr_df = pd.DataFrame(corr)
+        corr_df.index = [_canon_symbol(i) for i in corr_df.index]
+        corr_df.columns = [_canon_symbol(c) for c in corr_df.columns]
         fig2 = px.imshow(corr_df, text_auto=True, color_continuous_scale="RdBu_r", zmin=-1, zmax=1,
                           title="持仓股票两两日收益相关系数")
+        fig2.update_xaxes(type="category")
+        fig2.update_yaxes(type="category")
         st.plotly_chart(fig2, use_container_width=True)
         high_corr_pairs = []
         for i, s1 in enumerate(corr_df.columns):

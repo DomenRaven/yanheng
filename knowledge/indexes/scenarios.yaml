@@ -73,3 +73,15 @@ scenarios:
     name_zh: 大单买小单卖盘口异象
     docs: docs/09-场景决策案例/03-大单小单与可疑盘口.md
     advice_bias: multi_hypothesis_low_confidence_no_chase
+
+  - id: paper_then_live
+    name_zh: 先纸面账户再小资金实操
+    docs:
+      - docs/04-风险管理/11-纸面账户与影子交易.md
+      - docs/07-产品设计启示/04-散户工作流与纸面账户.md
+    advice_bias: same_rules_sim_then_user_confirm_no_auto_order
+
+  - id: cannot_afford_one_lot
+    name_zh: 小资金买不起一手
+    docs: docs/04-风险管理/10-以损定仓与A股手数.md
+    advice_bias: watch_not_open

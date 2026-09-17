@@ -20,11 +20,11 @@ import logging
 
 import akshare as ak
 import pandas as pd
-from tqdm import tqdm
 
 from common.config import get_config
-from common.db import get_connection, init_schema
-from common.http_retry import FetchFailedError, polite_sleep, retry_on_failure
+from common.db import write_session
+from common.http_retry import default_limiter, retry_on_failure
+from common.parallel_fetch import map_fetch_then_write
 
 logger = logging.getLogger("ingestion.corporate_actions")
 
@@ -150,9 +150,8 @@ def _get_targets(conn, symbols: list[str] | None) -> list[str]:
 def sync_corporate_actions(symbols: list[str] | None = None, limit: int | None = None) -> dict:
     checkpoint_size = get_config()["ingestion"].get("checkpoint_batch_size", 50)
 
-    conn = get_connection()
-    init_schema(conn)
-    targets = _get_targets(conn, symbols)
+    with write_session(init=True) as conn:
+        targets = _get_targets(conn, symbols)
     if limit:
         targets = targets[:limit]
 
@@ -161,53 +160,57 @@ def sync_corporate_actions(symbols: list[str] | None = None, limit: int | None =
         "div_ok": 0, "div_empty": 0, "div_failed": 0, "div_rows": 0,
         "failed_symbols": [],
     }
+    done = {"n": 0}
 
-    for i, symbol in enumerate(tqdm(targets, desc="corporate_actions")):
-        try:
-            raw_share = _fetch_share_change(symbol)
-            share_df = _normalize_share_change(raw_share, symbol)
+    def fetch(symbol: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+        share_df = _normalize_share_change(_fetch_share_change(symbol), symbol)
+        default_limiter().wait()
+        div_df = _normalize_dividend(_fetch_dividend(symbol), symbol)
+        return share_df, div_df
+
+    def on_result(
+        symbol: str,
+        pair: tuple[pd.DataFrame, pd.DataFrame] | None,
+        err: BaseException | None,
+    ) -> None:
+        done["n"] += 1
+        if err is not None:
+            stats["share_failed"] += 1
+            stats["div_failed"] += 1
+            stats["failed_symbols"].append(symbol)
+            logger.warning("%s 公司行为抓取失败: %s: %s", symbol, type(err).__name__, err)
+            with write_session() as conn:
+                conn.execute(
+                    "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
+                    ["sync_corporate_actions", symbol, "failed", f"{type(err).__name__}: {str(err)[:280]}"],
+                )
+            return
+        if pair is None:
+            stats["share_failed"] += 1
+            stats["div_failed"] += 1
+            stats["failed_symbols"].append(symbol)
+            return
+        share_df, div_df = pair
+        with write_session() as conn:
             if share_df.empty:
                 stats["share_empty"] += 1
             else:
                 stats["share_rows"] += _upsert(conn, "share_changes", ["symbol", "change_date"], share_df)
                 stats["share_ok"] += 1
-        except Exception as exc:  # noqa: BLE001 - 数据质量/接口问题都不该让全市场批量任务崩掉
-            stats["share_failed"] += 1
-            stats["failed_symbols"].append(symbol)
-            logger.warning("%s 股本变动抓取/写入失败: %s: %s", symbol, type(exc).__name__, exc)
-            conn.execute(
-                "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
-                ["sync_share_changes", symbol, "failed", f"{type(exc).__name__}: {str(exc)[:280]}"],
-            )
-
-        polite_sleep()
-
-        try:
-            raw_div = _fetch_dividend(symbol)
-            div_df = _normalize_dividend(raw_div, symbol)
             if div_df.empty:
                 stats["div_empty"] += 1
             else:
                 stats["div_rows"] += _upsert(conn, "dividends", ["symbol", "plan_announce_date"], div_df)
                 stats["div_ok"] += 1
-        except Exception as exc:  # noqa: BLE001
-            stats["div_failed"] += 1
-            logger.warning("%s 分红历史抓取/写入失败: %s: %s", symbol, type(exc).__name__, exc)
-            conn.execute(
-                "INSERT INTO sync_log (task_name, symbol, status, message) VALUES (?, ?, ?, ?)",
-                ["sync_dividends", symbol, "failed", f"{type(exc).__name__}: {str(exc)[:280]}"],
-            )
+        if done["n"] % checkpoint_size == 0:
+            logger.info("进度 %d/%d: %s", done["n"], len(targets), stats)
 
-        if (i + 1) % checkpoint_size == 0:
-            logger.info("进度 %d/%d: %s", i + 1, len(targets), stats)
-
-        polite_sleep()
-
-    conn.execute(
-        "INSERT INTO sync_log (task_name, status, message) VALUES (?, ?, ?)",
-        ["sync_corporate_actions", "success", str(stats)[:500]],
-    )
-    conn.close()
+    map_fetch_then_write(targets, fetch, on_result, desc="corporate_actions")
+    with write_session() as conn:
+        conn.execute(
+            "INSERT INTO sync_log (task_name, status, message) VALUES (?, ?, ?)",
+            ["sync_corporate_actions", "success", str(stats)[:500]],
+        )
     logger.info("公司行为(股本变动+分红)批量同步完成: %s", stats)
     return stats
 

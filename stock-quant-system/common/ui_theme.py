@@ -58,8 +58,8 @@ _GLOSSARY: dict[str, str] = {
             "保守地衡量\"尾部风险\"。",
     "最大回撤": "从历史最高点到之后最低点，净值跌了多少——衡量\"最惨的时候能有多惨\"，回撤越小"
                 "说明持仓过程中越少经历大幅亏损的煎熬。",
-    "集中度": "某一只股票的持仓市值占你全部持仓总市值的比例，比例过高意味着这只股票一旦下跌，"
-              "对你整体资产的拖累会很大（\"鸡蛋放一个篮子里\"）。",
+    "集中度": "某一只股票的市值 ÷ 你全部持仓市值之和。本系统把单票超过15%视为过重"
+              "（鸡蛋过分集中在一只上）；现金没有计入分母，需自己心里留一笔。",
     "冠军模型": "系统里当前正式使用、经过样本外验证效果最好的模型版本；每次训练出新模型，"
                 "都要用同一套历史数据和评估方法\"赛马\"，显著更好才会替换掉当前冠军。",
     "PSI": "全称Population Stability Index，衡量\"现在的数据分布\"和\"训练模型时用的数据分布\""
@@ -75,6 +75,28 @@ def apply_theme(page_title: str, page_icon: str = "📈", layout: str = "wide") 
     """每个页面文件的第一句 Streamlit 调用必须是这个（取代直接调 st.set_page_config）。"""
     st.set_page_config(page_title=page_title, page_icon=page_icon, layout=layout)
     st.markdown(_CSS, unsafe_allow_html=True)
+
+
+def connect_warehouse():
+    """打开仓库；文件锁时给出中文说明而不是红屏 traceback，然后 st.stop()。"""
+    from common.db import WarehouseBusyError, get_ui_connection, init_schema, is_read_only
+
+    try:
+        conn = get_ui_connection()
+    except WarehouseBusyError:
+        st.error(
+            "数据仓库正在后台更新，暂时打不开。"
+            "行情抓取会在每只股票的网络请求间隙释放文件锁，请过几秒刷新本页。"
+        )
+        st.stop()
+    if is_read_only(conn):
+        st.warning(
+            "数据正在后台更新，当前为只读浏览。"
+            "录入持仓、生成建议等写入操作请等更新结束后再试。"
+        )
+    else:
+        init_schema(conn)
+    return conn
 
 
 def action_meta(action: str) -> dict:
@@ -145,6 +167,21 @@ def render_advice_card(card: dict) -> None:
         if card.get("plain_summary"):
             st.markdown(f"<div class='yh-plain-summary'>💡 {card['plain_summary']}</div>", unsafe_allow_html=True)
 
+        if card.get("size_shares") and float(card["size_shares"]) >= 100:
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric("建议股数", f"{int(card['size_shares'])} 股")
+            if card.get("est_amount_cny") is not None:
+                s2.metric("约需资金", f"¥{float(card['est_amount_cny']):,.0f}")
+            pct = card.get("size_pct_nav")
+            if isinstance(pct, list):
+                pct = pct[1] if len(pct) > 1 else pct[0]
+            if pct is not None and not isinstance(pct, list):
+                s3.metric("占净值约", f"{float(pct):.1%}")
+            if card.get("max_loss_cny") is not None and float(card["max_loss_cny"]) > 0:
+                s4.metric("参考最大亏损", f"¥{float(card['max_loss_cny']):,.0f}")
+        if card.get("exec_date"):
+            st.caption(f"建议执行日（下一交易日）：{card['exec_date']}；持有参考周期 {card.get('horizon_days') or '—'} 个交易日")
+
         with st.expander("查看详细理由 / 风险提示 / 失效条件"):
             st.markdown("**理由**：")
             for r in card["reasons"]:
@@ -155,6 +192,38 @@ def render_advice_card(card: dict) -> None:
                     st.write(f"- {r}")
             st.markdown("**该建议在什么情况下会失效**：" + "；".join(card["invalid_if"]))
             st.caption(card["disclaimer"])
+
+
+def render_trust_footer(conn) -> None:
+    """M17：统一展示数据截止、冠军 run_id、模拟成交假设（只读查询）。"""
+    import json
+    from pathlib import Path
+
+    from common.config import get_config
+
+    try:
+        row = conn.execute(
+            "SELECT MAX(trade_date) FROM daily_quotes WHERE adjust = 'qfq'"
+        ).fetchone()
+        data_end = str(row[0]) if row and row[0] else "—"
+    except Exception:
+        data_end = "—"
+
+    model_run = "—"
+    try:
+        with Path("mlops/registry/champion.json").open(encoding="utf-8") as f:
+            model_run = json.load(f).get("run_id", "—")
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
+    pt = get_config().get("paper_trading") or {}
+    slip = pt.get("slippage_bp", "—")
+    st.divider()
+    st.caption(
+        f"数据截止（前复权日线）：{data_end} · 生产冠军 model_run_id：{model_run} · "
+        f"模拟成交：默认次日开盘价 ± {slip} bp 简化滑点（非真实盘口） · "
+        "本工具不构成投资建议，模拟净值不等于实盘收益。"
+    )
 
 
 _CSS = """

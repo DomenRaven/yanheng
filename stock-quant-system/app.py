@@ -16,9 +16,9 @@ import json
 import pandas as pd
 import streamlit as st
 
-from advice.advice_engine import build_priority_digest, load_latest_advice_cards
-from common.db import get_connection, init_schema
-from common.ui_theme import apply_theme, render_advice_card, section_header
+from advice.advice_engine import build_priority_digest, cards_for_digest, load_latest_advice_cards
+from common.symbol_lookup import render_symbol_picker
+from common.ui_theme import apply_theme, connect_warehouse, render_advice_card, render_trust_footer, section_header
 from risk.portfolio_risk import compute_concentration, compute_position_summary
 
 apply_theme(page_title="研衡 YanHeng · 持仓驾驶舱", page_icon="📈", layout="wide")
@@ -29,8 +29,7 @@ st.caption(
     "最终交易决策及风险由使用者自行承担。"
 )
 
-conn = get_connection()
-init_schema(conn)
+conn = connect_warehouse()
 try:
     today = dt.date.today().strftime("%Y-%m-%d")
     position_summary = compute_position_summary(conn, today)
@@ -61,31 +60,38 @@ try:
 
     # ---- 今日决策速览：把最近一次「持仓与建议」页生成的结果，按紧急程度汇总展示 ----
     st.subheader("🎯 今日决策速览")
-    st.caption("按紧急程度自动排序：止损/减仓类风控信号优先展示，用大白话说明该做什么，不用逐页翻找。")
+    st.caption(
+        "按紧急程度排序：止损/减仓优先。本页每次打开都重新读库；"
+        "已平仓的股票不会再显示持仓类建议。无持仓时这里只展示观察名单候选，不是「继续持有/减仓」。"
+    )
     as_of, latest_cards = load_latest_advice_cards(conn)
+    held_symbols = set(concentration["symbol"].tolist()) if not concentration.empty else set()
+    latest_cards = cards_for_digest(latest_cards, held_symbols)
     if not latest_cards:
         st.info(
-            "还没有生成过建议卡片。前往左侧「持仓与建议」页面录入持仓，"
-            "点击「生成/刷新建议卡片」后，这里会自动显示今天最需要关注的操作。"
+            "还没有可展示的今日决策。前往左侧「持仓与建议」录入持仓并点击「生成/刷新建议卡片」。"
         )
     else:
         digest = build_priority_digest(latest_cards, [], top_n=6)
         urgent = [c for c in digest if c.get("is_urgent")]
         if urgent:
             st.warning(f"⚠️ 有 {len(urgent)} 条需要重点关注的风控提示（止损/减仓/止盈/再平衡），建议今天处理。")
-        st.caption(f"数据对应交易日：{as_of}（点击「持仓与建议」页刷新可获取最新结果）")
+        elif n_positions == 0:
+            st.info("当前没有持仓。下列是观察名单（模型排序靠前、尚未持有），不是对已有仓位的操作建议。")
+        st.caption(f"数据对应交易日：{as_of}（在「持仓与建议」页再次生成可整份替换当天快照）")
         for card in digest:
             render_advice_card(card)
 
     st.divider()
 
+    section_header("持仓明细（按symbol聚合）", help_term="集中度", level=2)
     if position_summary.empty:
         st.info(
             "还没有录入任何持仓。前往左侧「持仓与建议」页面手动录入你的持仓，"
             "或直接查看「掘金扫描」页面获取全市场候选标的。"
         )
+        st.caption("有持仓后，本表会显示各股票市值占比。点上方标题右侧「❓ 集中度」可看名词解释。")
     else:
-        section_header("持仓明细（按symbol聚合）", help_term="集中度", level=2)
         display = concentration.merge(
             position_summary.groupby("symbol", as_index=False).agg(
                 unrealized_pnl=("unrealized_pnl", "sum"),
@@ -104,6 +110,12 @@ try:
         max_weight = display["weight_pct"].max() if not display.empty else 0
         if max_weight > 15:
             st.warning(f"⚠️ 单票集中度已达 {max_weight:.1f}%，超过15%风控上限，建议前往「风险仪表盘」页面查看详情。")
+
+    st.divider()
+    st.subheader("🔍 按名称查代码")
+    st.caption("本地股票池检索，不联网。输入「紫金矿业」「中信证券」或 6 位代码均可。")
+    render_symbol_picker(conn, key="home_lookup")
+    render_trust_footer(conn)
 finally:
     conn.close()
 
@@ -111,7 +123,7 @@ st.divider()
 st.markdown(
     "**导航**：「持仓与建议」录入/管理持仓并查看建议卡片 · 「掘金扫描」查看全市场模型排名 · "
     "「行情图表」看K线与持仓成本/止盈止损参考线 · 「风险仪表盘」组合风险指标 · "
-    "「AI解释」用通义千问把结构化信号翻译成人话（需配置API Key） · "
+    "「AI解释」用通义千问把结构化信号翻译成人话（需配置API Key；「今天」以本机日期为准） · "
     "「历史建议复盘」核对过去建议后续走势 · 「名词解释」大白话说明专业术语。\n\n"
     "详细方法论与验收记录见项目根目录 `docs/phase*-acceptance-report.md`。"
 )

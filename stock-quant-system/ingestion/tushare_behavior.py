@@ -311,16 +311,16 @@ def sync_moneyflow_hsgt(limit: int | None = None) -> dict:
     return stats
 
 
-def sync_all_tushare_behavior() -> dict:
+def sync_all_tushare_behavior(limit: int | None = None) -> dict:
     results = {}
     logger.info("=== Tushare Phase2行为金融原始数据预取 开始 ===")
-    results["dragon_tiger_list"] = sync_dragon_tiger_list()
-    results["block_trade"] = sync_block_trade()
-    results["margin_balance"] = sync_margin_balance()
-    results["moneyflow"] = sync_moneyflow()
-    results["moneyflow_hsgt"] = sync_moneyflow_hsgt()
-    results["pledge_stat"] = sync_pledge_stat()
-    results["holder_number"] = sync_holder_number()
+    results["dragon_tiger_list"] = sync_dragon_tiger_list(limit=limit)
+    results["block_trade"] = sync_block_trade(limit=limit)
+    results["margin_balance"] = sync_margin_balance(limit=limit)
+    results["moneyflow"] = sync_moneyflow(limit=limit)
+    results["moneyflow_hsgt"] = sync_moneyflow_hsgt(limit=limit)
+    results["pledge_stat"] = sync_pledge_stat(limit=limit)
+    results["holder_number"] = sync_holder_number(limit=limit)
     logger.info("=== Tushare Phase2行为金融原始数据预取 完成: %s ===", results)
     return results
 

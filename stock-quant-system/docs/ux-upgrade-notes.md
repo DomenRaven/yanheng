@@ -135,6 +135,12 @@ WCAG标准的相对亮度公式（`L = 0.2126R + 0.7152G + 0.0722B`，RGB先做s
 上限"标注；`section_header()`改造后的三处页面标题+❓按钮渲染正常，点击❓能正常弹出术语
 解释popover。
 
+**事后更正（2026-08-26 晚）**：上述 Plotly 结构检查没有发现「y 轴把 6 位股票代码当连续数字」
+——用户截图纵坐标出现「20万/40万/60万」，柱子几乎看不见。根因是 pandas/Plotly 把
+`600519` 当成数值，轴范围被拉到六十万。已强制 `yaxis.type="category"`，并在
+`compute_concentration` 把代码规范成 6 位字符串；超限柱改红色、轴范围按最大占比留白、
+图下增加对照表。回归见 `scripts/test_concentration.py`。
+
 ## 7. 全流程边界测试（2026-08-26）
 
 用户要求"检测全流程、各个功能与相应边界"。本轮UI改动只涉及`common/ui_theme.py`、
@@ -163,3 +169,29 @@ WCAG标准的相对亮度公式（`L = 0.2126R + 0.7152G + 0.0722B`，RGB先做s
 "真值"（不是`None`/`False`/`0`/`''`），对`name`列为`NaN`的记录（`advice_log`新增`name`
 列之前生成的历史记录，迁移不会回填旧记录），`NaN or ''`求值结果还是`NaN`，被拼进f-string
 后就显示成字面"nan"。用`pd.notna()`显式判断修复，`plain_summary`同一模式的隐患一并修复。
+
+## 8. 按名称查代码（2026-08-26）
+
+复用 `universe.name`，模块 `common/symbol_lookup.py`。接到首页、持仓录入、行情图、AI 解释。
+内存 DuckDB 单测覆盖：紫金矿业→601899、中信多匹配、6 位代码精确命中。未在占用中的主库上做
+端到端点击（当时 daily_pipeline 独占仓库）。
+
+## 9. LLM「停在 2024」不是断网（2026-08-26）
+
+用户反馈通义像断网、时间认知停在 2024。**原因**：qwen-plus / DeepSeek 都是聊天模型，
+没有实时日历，训练截止日期之后的「今天」会用参数记忆瞎补；东方财富标题常写成 `08-21`
+不带年份，模型就填成 2024。**不是** API 离线。
+
+**为什么不换 DeepSeek、不开 enable_search**：换模型解决不了对时；官方联网搜索在
+OpenAI 兼容接口上不返回来源（help.aliyun.com/zh/model-studio/web-search），会破坏
+「只翻译已提供、可追溯输入」的翻译层边界。新闻已经由 `llm/news_fetch.py` 即时抓取。
+
+**修法**：`explain_assistant._system_prompt(as_of)` 写入本机日期；`build_context_text`
+带新闻 `publish_time` 和 `prediction_log.trade_date`。回归：`scripts/test_llm_explain.py`。
+
+## 10. Phase 5 散户决策链 UI（2026-09-17）
+
+- 建议卡片：`render_advice_card` 展示股数/金额/执行日；`render_trust_footer` 统一数据截止与滑点说明（首页、持仓、复盘、待办）。
+- 持仓页：生成建议后「批量模拟成交」；模拟盘 expander 挂 `paper_weekly_report` 四指标。
+- 复盘页：S7 成交价相对建议日收盘偏差表。
+- 验收：`docs/phase5-acceptance-report.md` §6；测例 `test_paper_batch_simulate.py`。

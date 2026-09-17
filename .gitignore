@@ -22,6 +22,8 @@ Thumbs.db
 stock-quant-system/data/*.duckdb
 stock-quant-system/data/*.duckdb.wal
 stock-quant-system/data/*.parquet
+stock-quant-system/data/logs/
+stock-quant-system/data/ingestion_pipeline_state.json
 stock-quant-system/logs/
 stock-quant-system/mlops/registry/*
 !stock-quant-system/mlops/registry/.gitkeep
@@ -29,6 +31,10 @@ stock-quant-system/mlops/registry/*
 !stock-quant-system/mlops/registry/promotion_log.jsonl
 stock-quant-system/_tmp_*
 *.checkpoint*
+
+# 论文全文缓存（版权材料，仅本地核验，见 docs/99-参考文献/papers/README.md）
+docs/99-参考文献/papers/*.pdf
+docs/99-参考文献/_extract_tmp/
 
 # Playwright / one-off screenshots
 .playwright-mcp/
