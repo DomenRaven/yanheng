@@ -49,6 +49,11 @@ def _seed(conn: duckdb.DuckDBPyConnection) -> None:
         """,
         [d2],
     )
+    for td in (d, d2):
+        conn.execute(
+            "INSERT INTO trade_calendar (trade_date) VALUES (?)",
+            [td],
+        )
 
 
 def _with_temp_db() -> str:
