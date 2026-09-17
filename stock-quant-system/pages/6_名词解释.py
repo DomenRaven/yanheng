@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from common.ui_theme import apply_theme, glossary_dict
+from common.ui_theme import apply_theme, close_warehouse, connect_warehouse, glossary_dict
 
 apply_theme(page_title="名词解释", page_icon="📖")
 st.title("📖 名词解释")
@@ -25,3 +25,6 @@ st.info(
     "更完整的系统说明（怎么用、每个页面是干什么的、局限性有哪些）见项目根目录 "
     "`用户使用说明书.docx`；开发/维护相关说明见 `开发者使用说明书.docx`。"
 )
+
+_conn = connect_warehouse()
+close_warehouse(_conn)
