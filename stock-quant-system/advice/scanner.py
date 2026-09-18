@@ -1,8 +1,9 @@
 """
 全市场每日打分排序输出（"今日候选清单"）。
 
-流程：加载 mlops/registry 的**冠军模型**（champion.json 指向的run，见
-`mlops/retrain_schedule.py`；没有champion.json时兜底用最新一次训练，兼容Phase1产出）
+流程：加载 mlops/registry 的**冠军模型**（只读 `champion.json` 指向的 run，见
+`mlops/retrain_schedule.py` 与规格 M1）。**禁止**回退到「最新训练文件夹」。
+缺少 champion.json 或 run 目录不存在时直接失败，以免静默用挑战者/未晋升模型打生产分。
 -> 用 research/panel.py 的 build_asof_snapshot() 取"最近一个已同步的全市场交易日"的
 point-in-time因子快照 -> 用模型打分排序 -> 剔除当天停牌/涨停封死（买不进）的股票 ->
 对Top-N候选叠加 behavior/ 行为金融代理指标做冲突提示 -> 输出候选清单，同时把预测分数
@@ -29,30 +30,21 @@ import pandas as pd
 logger = logging.getLogger("advice.scanner")
 
 
-def _load_champion_model(registry_dir: str = "mlops/registry") -> tuple[object, dict]:
-    import pickle
+def _load_champion_model(
+    registry_dir: str = "mlops/registry",
+    *,
+    pool_id: str = "hs",
+) -> tuple[object, dict]:
+    from advice.champion_registry import load_champion_model
 
-    registry_path = Path(registry_dir)
-    champion_file = registry_path / "champion.json"
-    if champion_file.exists():
-        with open(champion_file, encoding="utf-8") as f:
-            champion = json.load(f)
-        run_dir = registry_path / champion["run_id"]
-        if not run_dir.exists():
-            raise FileNotFoundError(f"champion.json 指向的 run_id={champion['run_id']} 目录不存在")
-    else:
-        # 兼容 Phase1 产出：还没有champion.json时，退化为"用最新一次训练的run"
-        runs = sorted(registry_path.glob("*/metadata.json"))
-        if not runs:
-            raise FileNotFoundError(f"{registry_dir} 下没有任何已训练模型，先跑 research/train_lightgbm.py")
-        run_dir = runs[-1].parent
-        logger.warning("未找到 champion.json，退化为使用最新训练run=%s；建议跑一次 "
-                        "mlops/retrain_schedule.py 建立正式的冠军模型记录", run_dir.name)
-    with open(run_dir / "metadata.json", encoding="utf-8") as f:
-        metadata = json.load(f)
-    with open(run_dir / "model.pkl", "rb") as f:
-        model = pickle.load(f)
-    logger.info("加载冠军模型 run_id=%s（训练于 %s）", metadata["run_id"], metadata["trained_at"])
+    model, metadata = load_champion_model(registry_dir, pool_id=pool_id)
+    logger.info(
+        "加载池 %s 冠军 run_id=%s（训练于 %s，指针 %s）",
+        pool_id,
+        metadata.get("run_id"),
+        metadata.get("trained_at"),
+        metadata.get("champion_file"),
+    )
     return model, metadata
 
 
@@ -113,17 +105,27 @@ def _attach_behavior_signals(conn, symbols: list[str], as_of_date: str) -> pd.Da
     return out
 
 
-def run_scan(top_n: int = 50, registry_dir: str = "mlops/registry") -> tuple[pd.DataFrame, pd.DataFrame, object]:
+def run_scan(
+    top_n: int = 50,
+    registry_dir: str = "mlops/registry",
+    *,
+    pool_id: str = "hs",
+    source: str = "ui",
+) -> tuple[pd.DataFrame, pd.DataFrame, object]:
+    from advice.champion_registry import filter_snapshot_by_pool
+    from advice.scan_archive import record_scan_archive
     from common.db import get_connection, init_schema
-    from common.tushare_client import upsert
     from research.panel import build_asof_snapshot
 
-    model, metadata = _load_champion_model(registry_dir)
+    model, metadata = _load_champion_model(registry_dir, pool_id=pool_id)
     feature_cols = metadata["feature_cols"]
 
     snapshot = build_asof_snapshot()
+    snapshot = filter_snapshot_by_pool(snapshot, pool_id)
+    if snapshot.empty:
+        raise ValueError(f"池 {pool_id} 截面为空，无法扫描")
     trade_date = snapshot["trade_date"].iloc[0]
-    logger.info("快照日期: %s，候选股票数: %d", trade_date, len(snapshot))
+    logger.info("快照日期: %s，池 %s 候选股票数: %d", trade_date, pool_id, len(snapshot))
 
     X = snapshot[feature_cols].copy()
     for c in feature_cols:
@@ -148,21 +150,34 @@ def run_scan(top_n: int = 50, registry_dir: str = "mlops/registry") -> tuple[pd.
         ]
         out = result[cols]
 
-        # 预测留痕：全部候选（不只是Top-N）都记录，供drift_monitor.py后续做样本外IC
-        log_df = out[["symbol", "rank", "pred_score", "is_tradable"]].copy()
-        log_df["trade_date"] = pd.Timestamp(trade_date).date()
-        log_df["model_run_id"] = metadata["run_id"]
-        upsert(conn, "prediction_log", ["symbol", "trade_date", "model_run_id"],
-               log_df[["symbol", "trade_date", "model_run_id", "pred_score", "rank", "is_tradable"]])
+        record_scan_archive(
+            conn,
+            ranked=out,
+            trade_date=trade_date,
+            model_run_id=metadata["run_id"],
+            pool_id=pool_id,
+            source=source,
+        )
 
         top_pick = out[out["is_tradable"]].head(top_n).copy()
         behavior = _attach_behavior_signals(conn, top_pick["symbol"].tolist(), str(trade_date))
         top_pick = top_pick.merge(behavior, on="symbol", how="left")
+        from advice.reason_pack import attach_reason_packs
+
+        top_pick = attach_reason_packs(top_pick)
+        from advice.industry_cap import attach_industry
+
+        top_pick = attach_industry(conn, top_pick, trade_date)
     finally:
         conn.close()
 
-    logger.info("Top-%d 候选（剔除停牌/涨停封死不可买入的%d只）:\n%s", top_n,
-                (~out["is_tradable"]).sum(), top_pick.head(10).to_string(index=False))
+    logger.info(
+        "池 %s Top-%d 候选（剔除不可买入 %d 只）:\n%s",
+        pool_id,
+        top_n,
+        int((~out["is_tradable"]).sum()),
+        top_pick.head(10).to_string(index=False),
+    )
     return out, top_pick, trade_date
 
 

@@ -56,6 +56,16 @@ ingestion:
       # 连续失败多少期后熔断，避免 E2E/夜间任务空转数小时
       consecutive_fail_abort: 6
 
+  # 日更灌库时跳过逐股东财（东财+代理易拖死整夜）；北交所由周末 tushare_prices 补
+  # 见 docs/data-maintenance-policy.md
+  quotes_daily_skip_exchanges:
+    - bj
+
+  # 日更 / 周更 预设名（scripts/run_daily_refresh --profile）
+  maintenance_profiles:
+    weekday_decision: "universe,quotes_decision,market_data,tushare_market_data"
+    weekend_research: "quotes,fundamentals,income_statement,corporate_actions,reference_data,tushare_prices,tushare_market_data,tushare_behavior"
+
 # ---------- 股票池过滤 ----------
 universe:
   exclude_st: false          # 数据层不过滤 ST，保留标记，交由策略层决定是否排除
@@ -82,6 +92,8 @@ paper_trading:
   max_concurrent_positions: 3
   horizon_days: 20
   default_template_for_advice: live_prep_10k
+  # 明日待办是否允许北交所开仓（需求决议 §9：默认关）
+  allow_bj_open_in_todos: false
   templates:
     practice_100k:
       initial_cash_cny: 100000.0
@@ -97,3 +109,11 @@ llm:
   provider: dashscope
   api_key_env: "DASHSCOPE_API_KEY"
   model: qwen-plus
+
+# ---------- 投产就绪（空库 / 假新 / 缺 limit_price 等均阻塞决策链） ----------
+production_readiness:
+  min_universe_symbols: 3000
+  min_quote_coverage_ratio: 0.80
+  max_quote_lag_trading_days: 2
+  min_limit_price_coverage: 0.90
+  min_daily_basic_coverage: 0.80

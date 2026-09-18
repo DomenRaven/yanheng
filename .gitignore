@@ -28,6 +28,8 @@ stock-quant-system/logs/
 stock-quant-system/mlops/registry/*
 !stock-quant-system/mlops/registry/.gitkeep
 !stock-quant-system/mlops/registry/champion.json
+!stock-quant-system/mlops/registry/champion_hs.json
+!stock-quant-system/mlops/registry/champion_bj.json
 !stock-quant-system/mlops/registry/promotion_log.jsonl
 stock-quant-system/_tmp_*
 *.checkpoint*

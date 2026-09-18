@@ -67,8 +67,8 @@ def _concentration_table(conc_df: pd.DataFrame) -> pd.DataFrame:
 apply_theme(page_title="风险仪表盘", page_icon="⚠️")
 st.title("⚠️ 组合风险仪表盘")
 st.caption(
-    "VaR/CVaR 用历史模拟法（过去约1年真实收益的经验分位数），回撤是\"按当前持仓权重重放历史\"的"
-    "假设性回撤，不是真实调仓后的回撤——方法边界见 `risk/portfolio_risk.py` 模块docstring。"
+    "风险价值与条件风险价值采用历史模拟法（过去约一年真实日收益的经验分位数）。"
+    "回撤按「当前持仓权重重放历史」估算，用于观察集中持仓可能经历的回落幅度。"
 )
 
 conn = connect_warehouse()
@@ -85,10 +85,10 @@ else:
     col1.metric("持仓股票数", report["n_positions"])
     col2.metric("最大单票占比", f"{report['max_single_weight']:.1%}" if report["max_single_weight"] else "—")
     var = report["portfolio_var"]
-    col3.metric("组合1日VaR(95%)", f"{var['var_1d_pct']:.2%}" if var.get("status") == "ok" else var.get("status", "—"))
+    col3.metric("组合 1 日风险价值(95%)", f"{var['var_1d_pct']:.2%}" if var.get("status") == "ok" else var.get("status", "—"))
     with col4:
         st.write("")
-        term_help("VaR")
+        term_help("风险价值")
 
     st.divider()
     section_header("持仓集中度", help_term="集中度", level=2)
@@ -108,7 +108,7 @@ else:
         st.dataframe(table, use_container_width=True, hide_index=True)
 
     st.divider()
-    st.subheader("逐股票波动率 / VaR")
+    st.subheader("逐股票波动率 / 风险价值")
     vol_df = pd.DataFrame(report["volatility_var_by_symbol"])
     if not vol_df.empty:
         if "symbol" in vol_df.columns:
@@ -134,13 +134,13 @@ else:
                 if pd.notna(v) and v > 0.7:
                     high_corr_pairs.append((s1, s2, v))
         if high_corr_pairs:
-            st.warning("以下持仓两两高度相关（>0.7），\"分散持仓\"的实际效果有限：\n" +
-                       "\n".join(f"- {a} vs {b}: {v:.2f}" for a, b, v in high_corr_pairs))
+            st.warning("以下持仓两两高度相关（大于 0.7），分散效果可能有限：\n" +
+                       "\n".join(f"- {a} 与 {b}: {v:.2f}" for a, b, v in high_corr_pairs))
     else:
-        st.caption("持仓不足2只或价格历史不足，暂无法计算相关性矩阵。")
+        st.caption("持仓不足 2 只或价格历史不足，暂无法计算相关性矩阵。")
 
     st.divider()
-    section_header("组合层面VaR / 回撤（历史模拟法）", help_term="最大回撤", level=2)
+    section_header("组合层面风险价值 / 回撤（历史模拟法）", help_term="最大回撤", level=2)
     dd = report["drawdown_since_current_weights"]
     if dd.get("status") == "ok":
         c1, c2 = st.columns(2)

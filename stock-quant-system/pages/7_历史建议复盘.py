@@ -14,33 +14,37 @@ import datetime as dt
 import pandas as pd
 import streamlit as st
 
+from advice.advice_trace import complete_trace_count, load_advice_traces
 from common.db import is_read_only
-from common.ui_theme import action_meta, apply_theme, connect_warehouse, close_warehouse, section_header
+from common.ui_theme import action_meta, apply_theme, connect_warehouse, close_warehouse, render_production_banners, section_header
 
 apply_theme(page_title="历史建议复盘", page_icon="🕰️")
 st.title("🕰️ 历史建议复盘")
 st.caption(
-    "统计口径：\"建议发出当天收盘价\" → \"最新收盘价\"的涨跌幅，用来大致核对过去的建议方向是否"
-    "合理，不是严格的策略回测，也不构成未来收益的任何保证。"
+    "统计方式：从「建议发出当天收盘价」到「最新收盘价」的涨跌幅，用来大致核对过去建议的方向。"
+    "未计入真实成交价、滑点、仓位大小与组合效应；请勿当作未来收益承诺。"
 )
 
 conn = connect_warehouse()
 try:
+    render_production_banners(conn)
+    traces = load_advice_traces(conn)
+    n_complete = complete_trace_count(traces)
+    m1, m2 = st.columns(2)
+    m1.metric("建议条数", 0 if traces.empty else len(traces))
+    m2.metric("已关联成交的建议", n_complete)
+    st.caption(
+        "「已关联成交」指：同一条建议既有快照，又有成功成交（模拟或您确认的实盘）。"
+        "显示为 0 表示尚未走过「生成建议 → 模拟或确认成交」。"
+        "成交价相对建议日收盘的价差，反映日频执行缺口。"
+    )
+
     log = conn.execute(
         """
         SELECT advice_id, as_of, symbol, name, action, confidence, plain_summary, created_at,
                size_shares, est_amount_cny, exec_date, max_loss_cny
         FROM advice_log
         ORDER BY as_of DESC, created_at DESC
-        """
-    ).df()
-
-    fills = conn.execute(
-        """
-        SELECT advice_id, symbol, side, shares, price, fees, trade_date, source, reject_reason
-        FROM paper_trades
-        WHERE reject_reason IS NULL
-        ORDER BY trade_date DESC
         """
     ).df()
 
@@ -141,59 +145,99 @@ try:
                                 else ""
                             )
                         )
-                    pt = fills[fills["advice_id"] == row["advice_id"]] if not fills.empty else fills
-                    if not pt.empty:
-                        f0 = pt.iloc[0]
-                        src = "模拟" if f0["source"] == "sim" else "用户确认实盘"
-                        fill_px = float(f0["price"])
-                        adv_px = float(row["price_then"]) if pd.notna(row.get("price_then")) else None
-                        px_note = ""
-                        if adv_px and adv_px > 0:
-                            diff = fill_px / adv_px - 1
-                            px_note = f" · 相对建议日收盘 {diff:+.2%}"
+                    tr = traces[traces["advice_id"] == row["advice_id"]] if not traces.empty else traces
+                    linked = (not tr.empty) and bool(tr.iloc[0].get("trace_complete"))
+                    if linked:
+                        f0 = tr.iloc[0]
+                        src = "模拟" if f0["fill_source"] == "sim" else "用户确认实盘"
+                        fill_px = float(f0["fill_price"])
+                        gap = f0.get("fill_vs_advice_close")
+                        px_note = (
+                            f" · 相对建议日收盘 {float(gap):+.2%}"
+                            if pd.notna(gap)
+                            else ""
+                        )
                         st.success(
-                            f"已关联成交（{src}）：{f0['side']} {int(f0['shares'])} 股 "
-                            f"@ ¥{fill_px:.2f}（{f0['trade_date']}）{px_note}"
+                            f"已关联成交（{src}）：{f0['fill_side']} {int(f0['fill_shares'])} 股 "
+                            f"@ ¥{fill_px:.2f}（{f0['fill_date']}）{px_note}"
                         )
                     elif row["action"] in ("open", "reduce", "stop_loss", "take_profit", "rebalance"):
-                        st.caption("尚未关联 paper 成交记录。")
+                        st.caption("尚未关联模拟或确认成交记录。")
 
-        if not merged.empty and not fills.empty:
-            section_header("建议 vs 成交价偏差（S7 简版）", level=2)
-            joined = merged.merge(
-                fills[["advice_id", "price", "side", "source"]],
-                on="advice_id",
-                how="inner",
+        complete = traces[traces["trace_complete"]] if not traces.empty else traces
+        if not complete.empty:
+            section_header("计划仓位与实际成交对照", level=2)
+            st.caption(
+                "对照计划股数与实际成交股数，有助于发现「想买却没买到」等情况。"
+                "股数缺口 = 成交股数 − 建议股数；未成交的不在本表。"
             )
-            joined = joined[joined["price_then"].notna() & (joined["price_then"] > 0)]
-            if not joined.empty:
-                joined["fill_vs_advice_close"] = joined["price"] / joined["price_then"] - 1
+            ledger = complete.copy()
+            st.dataframe(
+                ledger[
+                    [
+                        "as_of",
+                        "symbol",
+                        "action",
+                        "planned_shares",
+                        "fill_shares",
+                        "shares_gap",
+                        "planned_amount_cny",
+                        "fill_source",
+                    ]
+                ]
+                .head(30)
+                .rename(
+                    columns={
+                        "as_of": "建议日",
+                        "planned_shares": "计划股数",
+                        "fill_shares": "成交股数",
+                        "shares_gap": "股数缺口",
+                        "planned_amount_cny": "计划金额",
+                        "fill_source": "来源",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+        if not complete.empty:
+            section_header("建议价与成交价偏差", level=2)
+            show = complete[complete["fill_vs_advice_close"].notna()]
+            if not show.empty:
                 st.caption(
-                    f"共 {len(joined)} 条可对比；中位偏差 "
-                    f"{joined['fill_vs_advice_close'].median():+.2%}（非策略回测口径）。"
+                    f"共 {len(show)} 条可对比；中位偏差 "
+                    f"{show['fill_vs_advice_close'].median():+.2%}。"
+                    "该偏差相对「信号日收盘立刻成交」的假设，用于观察执行缺口。"
                 )
                 st.dataframe(
-                    joined[
-                        ["as_of", "symbol", "action", "price_then", "price", "fill_vs_advice_close", "source"]
+                    show[
+                        [
+                            "as_of",
+                            "symbol",
+                            "action",
+                            "advice_close",
+                            "fill_price",
+                            "fill_vs_advice_close",
+                            "fill_source",
+                        ]
                     ]
                     .head(30)
                     .rename(
                         columns={
                             "as_of": "建议日",
-                            "price_then": "建议日收盘",
-                            "price": "成交价",
+                            "advice_close": "建议日收盘",
+                            "fill_price": "成交价",
                             "fill_vs_advice_close": "成交/收盘-1",
-                            "source": "来源",
+                            "fill_source": "来源",
                         }
                     ),
                     use_container_width=True,
                     hide_index=True,
                 )
 
-    section_header("券商已成交？回写到模拟账本（M15）", level=2)
+    section_header("券商已成交？回写到本机账本", level=2)
     st.caption(
-        "在券商 App 手动下单后，可把实际成交价写入本机 paper 账本（source=user_confirmed_live），"
-        "便于与建议价对比；**不会**连接券商 API。"
+        "在券商软件手动下单后，可将实际成交价写入本机模拟账本，便于与建议价对比。"
+        "本操作不会连接券商。"
     )
     readonly = is_read_only(conn)
     from advice.paper_broker import execute_paper_order, latest_paper_account_id
@@ -204,9 +248,9 @@ try:
     else:
         with st.form("confirm_live_fill"):
             c1, c2, c3 = st.columns(3)
-            aid_in = c1.text_input("advice_id", value="")
+            aid_in = c1.text_input("建议编号", value="")
             sym = c2.text_input("代码", value="")
-            side = c3.selectbox("方向", ["buy", "sell"])
+            side = c3.selectbox("方向", ["buy", "sell"], format_func=lambda x: "买入" if x == "buy" else "卖出")
             c4, c5, c6 = st.columns(3)
             sh = c4.number_input("股数", min_value=100, step=100, value=100)
             px = c5.number_input("实际成交价", min_value=0.01, step=0.01, format="%.2f")
@@ -227,7 +271,7 @@ try:
                 elif r.status == "skipped":
                     st.warning(r.reject_reason or "已跳过")
                 else:
-                    st.error(r.reject_reason or "拒绝")
+                    st.error(r.reject_reason or "已拒绝")
                 st.rerun()
 finally:
     close_warehouse(conn)

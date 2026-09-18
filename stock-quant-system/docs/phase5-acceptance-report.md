@@ -130,10 +130,10 @@ $env:STOCK_QUANT_DB = (Resolve-Path data\e2e_test.duckdb).Path  # 可选
 | ID | 条款 | 结果 | 证据 |
 |----|------|------|------|
 | M15 | 用户确认成交回写 | **通过** | `execute_paper_order(..., source='user_confirmed_live', price_override=...)` |
-| M16 | 建议价 vs 成交价 | **部分** | 复盘页展示 advice 与 fill 并排；无自动券商对账 |
-| S6–S7 | 周报 / 完整 trace | **未做** | 不阻塞 Must；后续可用 `paper_trades` 聚合 |
+| M16 | 建议→成交→复盘至少一条 `advice_id` | **通过（代码）** | `scripts/test_advice_trace.py`：persist→成交→`load_advice_traces` 完整行 1 条；`fill_vs_advice_close` 相对建议日收盘 |
+| S6–S7 | 周报 / 完整 trace | **部分 / S7 已绑 M16** | S6 expander 摘要；S7 偏差表改走 `advice_trace`（非页面重算） |
 
-完整 trace 路径（手工）：生成建议 → 明日待办 → 模拟或 M15 确认 → 复盘页见关联成交。
+完整 trace 路径：生成建议 → 明日待办 → 模拟或 M15 确认 → 复盘页 metric「全链路 trace」≥1。生产库 0 条 = 尚未成交，不是 schema 缺口。
 
 ---
 
@@ -165,7 +165,7 @@ $env:STOCK_QUANT_DB = (Resolve-Path data\e2e_test.duckdb).Path  # 可选
 
 - 批量模拟 **未**自动串 `suggest_rebalance` 权重再算股数（optimizer 仍只影响 rebalance 动作语义）。  
 - 建议日收盘 ≠ 次日开盘价；S7 偏差表已标注口径。  
-- 其他 Streamlit 页（风险/图表/AI）尚未统一页脚，可按需补 `render_trust_footer`。
+- M17 已通过 `close_warehouse` 覆盖全部 Streamlit 子页。
 
 ```powershell
 .venv\Scripts\python.exe scripts\test_paper_batch_simulate.py
@@ -174,4 +174,63 @@ $env:STOCK_QUANT_DB = (Resolve-Path data\e2e_test.duckdb).Path  # 可选
 
 ---
 
-*冠军模型未替换；scanner 只读 `mlops/registry/champion.json`。*
+## 7. 投产补完（2026-09-17）
+
+对照「真实环境自用」梳理的待办与本轮交付：
+
+| 优先级 | 待办 | 状态 | 交付 |
+|--------|------|------|------|
+| P0 | 日常决策链文档（数据更新 + 收盘流程） | **已补** | `docs/production-daily-runbook.md` |
+| P0 | 行情滞后 / 灌库只读可见 | **已补** | `render_production_banners`（首页、持仓页） |
+| P0 | M17 全站合规页脚 | **已确认** | `close_warehouse` 统一调用 `render_trust_footer` |
+| P0 | 一键练习闭环（扫描→建议→模拟） | **已补（本地）** | `run_practice_cycle` + 持仓页按钮 |
+| P1 | S4 置信度文案 | **已补** | 卡片 caption「分位不是胜率」 |
+| P1 | 规格 §6 与 README/HANDOFF 滞后 | **已同步** | 本报告 + `9.16-需求规格` §6 |
+| P2 | Should：S1 理由包 / S2 行业上限 / S9 计划仓位 | **已补（2026-09-18）** | 见 §8–§9；S2 非 C3 全中性 |
+| P2 | 独立 S6 周报页 | **未做** | expander 摘要已够用 |
+| P2 | optimizer→open 股数全自动 | **未做** | 工程决策：rebalance 语义优先 |
+| P2 | Word 手册与 Streamlit 对齐 | **未做** | 以 Markdown 日课为准 |
+| 数据 | `index_weight` 历史、北交所 eastmoney | **运维** | 见 data-update 复盘 / 网络说明 |
+
+**投产前建议跑**：日课 §4 脚本 + 人工可用性测试指南勾一遍。
+
+---
+
+## 8. M16 全链路（2026-09-18）
+
+对照规格原文「至少一条 advice_id 全链路」与 `docs/phase5-gap-construction.md` §1。
+
+| 项 | 结果 |
+|----|------|
+| 模块 | `advice/advice_trace.py`（页面只调用） |
+| 证据 | `scripts/test_advice_trace.py`：1 条完整 trace；`fill_shares==planned_shares`；`fill_vs_advice_close=-4.67%`（次日开盘相对信号收盘，执行缺口口径） |
+| 已知局限 | 无 Level-2，IS 不分解冲击；生产库成交条数仍可为 0 |
+
+## 9. S1 / S2 / S9（2026-09-18）
+
+对照 `docs/phase5-gap-construction.md` §2–§4。
+
+| ID | 证据 | 局限 |
+|----|------|------|
+| S1 | `scripts/test_reason_pack.py`：冲突进入 reasons；`attach_reason_packs` 不改 rank | 行业中文名仍缺 |
+| S2 | `scripts/test_industry_cap.py`：同行业第二只 open 不进待办；止损不拦截 | 不是 Barra 全中性；无行业代码则不占名额 |
+| S9 | 与 M16 同测：`shares_gap==0`；复盘页台账 | 未成交不入台账（有意：避免假成交） |
+
+*冠军模型未替换；scanner 缺 `champion.json` 时失败，不读最新文件夹。*
+
+---
+
+## 10. 规格再核对与探针循环（2026-09-18）
+
+对照用户「逐项核对 → 补齐 → 全流程探针 → 归档 → 再修」。
+
+| 项 | 结果 | 证据 |
+|----|------|------|
+| M8 watch/hold 空话 | **已修** | `actionable_invalid_if_watch/hold`；缺止损 open→watch；`test_m8_invalid_if.py` |
+| M4 UI T+1 | **已补** | `pages/1` 模拟盘 caption |
+| M1 只读冠军 | **已收紧** | 无 `champion.json` 抛错；`test_champion_only.py` |
+| S1 跨会话 | **已补** | `advice_log.reason_one_liner` 落盘/回放 |
+| 审计退出码 | **已拆** | `audit_phase5` 默认代码/schema 失败才 exit 1；生产未就绪记 DATA_BLOCKED |
+| 全流程探针 | **已跑** | `scripts/probe_retail_chain.py` → `docs/phase5-probe-log-20260918.md` |
+
+**生产库**：`limit_price`/`daily_basic` 覆盖 0、有效截面 2026-09-17 vs 期望 2026-09-18；灌库保持暂停，决策 UI 继续阻塞。完整 `advice_id` 成交 trace 生产库仍为 0（用户未模拟/M15）。

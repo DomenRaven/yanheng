@@ -23,11 +23,26 @@ $venv = ".venv\Scripts\python.exe"
 # 中断后续跑（参数须与上次一致：only/skip/limit）
 & $venv -m scripts.run_data_update --resume
 
-# 日常增量（可跳过低频财务步）
-& $venv -m scripts.run_data_update --skip fundamentals,income_statement
+# 日常增量（推荐：持仓/待办量价 + 全市场涨跌停/市值；全市场掘金放周末）
+& $venv -m scripts.run_daily_refresh --profile weekday_decision
+& $venv -m scripts.run_daily_refresh --profile weekend_research
+
+# 仅补北交所/CDR（强制刷新 adj 后转 qfq）
+& $venv -m scripts.run_data_update --only tushare_bse_quotes
+
+# 旧式 skip 财务（仍跑 quotes 含 bj 东财，耗时长；另跳过轻量 bj 步）
+& $venv -m scripts.run_data_update --skip fundamentals,income_statement,corporate_actions,tushare_bse_quotes
 ```
 
 断点文件：`data/ingestion_pipeline_state.json`（与 `warehouse.duckdb` 同目录）。
+
+Windows 计划任务一键注册：`docs/manuals/windows-scheduled-maintenance.md`（`scripts/install_windows_maintenance_tasks.ps1`）。
+
+## 北交所注意（2026-09-18）
+
+- 日更：`quotes` 跳过 bj 东财 → 用 `tushare_bse_quotes`（`sync_bse_cdr_qfq_quotes(refresh_adj=True)`）。
+- 全量/周末：`tushare_prices` 内同样强制刷新复权因子再写 qfq；勿只在 `adj.empty` 时拉因子（否则整批 0 行）。
+- 详见 `docs/data-maintenance-policy.md` §3.4。
 
 ## 断点语义（回答用户「不重复不缺漏」）
 

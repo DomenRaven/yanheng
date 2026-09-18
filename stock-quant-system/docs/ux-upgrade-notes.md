@@ -191,7 +191,10 @@ OpenAI 兼容接口上不返回来源（help.aliyun.com/zh/model-studio/web-sear
 
 ## 10. Phase 5 散户决策链 UI（2026-09-17）
 
-- 建议卡片：`render_advice_card` 展示股数/金额/执行日；`render_trust_footer` 统一数据截止与滑点说明（首页、持仓、复盘、待办）。
-- 持仓页：生成建议后「批量模拟成交」；模拟盘 expander 挂 `paper_weekly_report` 四指标。
+- 建议卡片：`render_advice_card` 展示股数/金额/执行日；置信度 caption（S4）。
+- 页脚：`close_warehouse` → 全页 `render_trust_footer`（M17）。
+- 投产：`render_production_banners`（灌库只读 + 行情滞后）于首页、持仓页。
+- 持仓页：批量模拟、「一键练习闭环」；模拟盘 expander 挂 `paper_weekly_report`。
 - 复盘页：S7 成交价相对建议日收盘偏差表。
-- 验收：`docs/phase5-acceptance-report.md` §6；测例 `test_paper_batch_simulate.py`。
+- 验收：`docs/phase5-acceptance-report.md` §6–§7。
+- 机器可用性：`docs/manuals/usability-test-machine.yaml` + `scripts/run_usability_machine_tests.py`。

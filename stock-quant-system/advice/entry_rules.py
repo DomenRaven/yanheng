@@ -52,11 +52,24 @@ def build_tomorrow_todos(
     conn,
     *,
     max_items: int = 3,
+    allow_bj_open: bool | None = None,
 ) -> list[dict]:
-    """从 open/reduce/stop_loss 等卡片挑最多 max_items 条明日待办。"""
+    """从 open/reduce/stop_loss 等卡片挑最多 max_items 条明日待办。
+
+    allow_bj_open=False（默认，读 config）时：不把北交所 open 放进待办（持仓卖/减仍保留）。
+    """
+    from common.config import get_config
+
+    if allow_bj_open is None:
+        allow_bj_open = bool((get_config().get("paper_trading") or {}).get("allow_bj_open_in_todos", False))
+
     exec_d = next_trade_date(conn, signal_date)
     if exec_d is None:
         return []
+
+    def _is_bj(symbol: str) -> bool:
+        row = conn.execute("SELECT exchange FROM universe WHERE symbol = ?", [symbol]).fetchone()
+        return bool(row and row[0] == "bj")
 
     priority = {"stop_loss": 0, "reduce": 1, "take_profit": 2, "open": 3, "rebalance": 4}
     actionable = []
@@ -65,6 +78,8 @@ def build_tomorrow_todos(
         if act not in priority:
             continue
         if act == "open" and c.get("size_shares", 0) < 100:
+            continue
+        if act == "open" and not allow_bj_open and _is_bj(str(c["symbol"])):
             continue
         blocked, why = (False, "")
         if act == "open":
@@ -85,4 +100,8 @@ def build_tomorrow_todos(
         actionable.append((priority.get(act, 9), -c.get("confidence", 0), item))
 
     actionable.sort(key=lambda x: (x[0], x[1]))
-    return [x[2] for x in actionable[:max_items]]
+    ordered = [x[2] for x in actionable]
+    from advice.industry_cap import cap_opens_one_per_industry, latest_industry_codes
+
+    ind_map = latest_industry_codes(conn, [i["symbol"] for i in ordered], signal_date)
+    return cap_opens_one_per_industry(ordered, ind_map, max_items=max_items)

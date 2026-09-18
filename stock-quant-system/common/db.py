@@ -393,7 +393,19 @@ CREATE TABLE IF NOT EXISTS prediction_log (
     rank          INTEGER,
     is_tradable   BOOLEAN,
     scanned_at    TIMESTAMP DEFAULT current_timestamp,
+    pool_id       VARCHAR DEFAULT 'all',  -- all | hs | bj（分池后）
     PRIMARY KEY (symbol, trade_date, model_run_id)
+);
+
+-- 掘金扫描 run 元数据：同池同截面同模型不重复新建（需求 R1）
+CREATE TABLE IF NOT EXISTS scan_run (
+    pool_id          VARCHAR NOT NULL,
+    asof_trade_date  DATE NOT NULL,
+    model_run_id     VARCHAR NOT NULL,
+    universe_size    INTEGER,
+    source           VARCHAR,            -- ui | cli | weekend | advice
+    scanned_at       TIMESTAMP DEFAULT current_timestamp,
+    PRIMARY KEY (pool_id, asof_trade_date, model_run_id)
 );
 
 -- Phase 4 持仓驾驶舱：手动持仓录入（本项目不接券商API，MVP路线图明确"账户导入/手动持仓"，
@@ -426,6 +438,7 @@ CREATE TABLE IF NOT EXISTS advice_log (
     reasons_json  VARCHAR,            -- JSON数组，可追溯的理由明细
     risks_json    VARCHAR,
     invalid_if_json VARCHAR,
+    reason_one_liner VARCHAR,  -- S1 一句话理由包，跨会话回放
     model_run_id  VARCHAR,            -- 对应 mlops/registry/<run_id>/，无模型参与时为空
     created_at    TIMESTAMP DEFAULT current_timestamp,
     PRIMARY KEY (advice_id)
@@ -574,6 +587,8 @@ _MIGRATIONS_SQL = [
     "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS max_loss_cny DOUBLE",
     "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS horizon_days INTEGER",
     "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS exec_date DATE",
+    "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS reason_one_liner VARCHAR",
+    "ALTER TABLE prediction_log ADD COLUMN IF NOT EXISTS pool_id VARCHAR DEFAULT 'all'",
 ]
 
 

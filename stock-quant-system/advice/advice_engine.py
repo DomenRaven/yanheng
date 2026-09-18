@@ -34,6 +34,8 @@ import uuid
 
 import pandas as pd
 
+from advice.reason_pack import build_reason_pack
+
 logger = logging.getLogger("advice.advice_engine")
 
 _STOP_LOSS_PCT = -0.08
@@ -43,21 +45,16 @@ _OPEN_CANDIDATE_RANK_THRESHOLD = 50  # 排名进入前50才考虑"建仓"级别�
 
 
 def _reasons_from_factors(row: pd.Series) -> list[dict]:
-    reasons = []
-    if pd.notna(row.get("pred_score")):
-        reasons.append({"type": "model", "ref": "champion_model", "detail": f"模型打分 {row['pred_score']:.4f}，全市场排名第{int(row['rank'])}" if pd.notna(row.get("rank")) else f"模型打分 {row['pred_score']:.4f}"})
-    if pd.notna(row.get("factor_mom_12_1")):
-        reasons.append({"type": "factor", "ref": "MOM-12-1", "detail": f"12月动量(剔近1月): {row['factor_mom_12_1']:.4f}"})
-    if pd.notna(row.get("factor_roe")):
-        reasons.append({"type": "factor", "ref": "ROE", "detail": f"ROE: {row['factor_roe']:.4f}"})
-    return reasons
+    """S1：因子 + 行为冲突同一条 reasons 链；行为项不改排名。"""
+    return build_reason_pack(row)["reasons"]
 
 
 def _risks_from_behavior(row: pd.Series) -> list[str]:
     risks = []
-    conflict = row.get("conflict_flag")
-    if conflict and conflict != "无冲突":
-        risks.append(f"行为金融冲突信号: {conflict}")
+    pack = build_reason_pack(row)
+    if pack["has_conflict"]:
+        for c in pack["conflicts"]:
+            risks.append(c["detail"])
     return risks
 
 
@@ -72,7 +69,7 @@ def _plain_summary(action: str, **kw) -> str:
     if action == "take_profit":
         return f"已经赚了{kw.get('pnl_pct', 0):.1%}，而且模型现在没那么看好了，可以考虑先卖一部分锁定收益。"
     if action == "rebalance":
-        return "当前持仓比例和系统建议的最优比例差得有点多，可以考虑往建议方向微调，不是紧急操作。"
+        return "当前持仓比例与系统建议比例偏差较大，可考虑小幅调整；紧急程度通常低于止损与减仓。"
     if action == "open":
         rank = kw.get("rank")
         sh = kw.get("size_shares")
@@ -92,18 +89,18 @@ def _plain_summary(action: str, **kw) -> str:
                 head += f"，若触发止损最大亏约 ¥{float(ml):.0f}"
             return head + "。"
         return (
-            f"模型在全市场里把它排到了第{int(rank)}名（越靠前越被看好），若感兴趣可进一步研究是否建仓。"
+            f"模型在全市场排到第{int(rank)}名（越靠前表示排序越靠前），若感兴趣可进一步研究是否建仓。"
             if rank
-            else "模型比较看好，可进一步研究。"
+            else "模型排序相对靠前，可进一步研究。"
         )
     if action == "hold":
         if kw.get("rank_ok"):
-            return "模型仍然看好这只股票，暂时没有需要操作的地方，正常持有观察就好。"
-        return "目前没有特别强的信号，正常持有、按计划观察即可，不用频繁操作。"
+            return "模型仍相对看好这只股票，暂无强制动作，可继续持有并观察。"
+        return "目前没有特别强的信号，可按原计划持有观察，避免频繁操作。"
     if action == "watch":
         if kw.get("not_tradable"):
-            return "今天这只股票没法交易（停牌或涨跌停封死），先别急，等能交易了再说。"
-        return "暂时没有特别强的信号，建议先观望，不用着急下手。"
+            return "今日无法交易（停牌或涨跌停封死），请等待可交易后再决定。"
+        return "暂时没有特别强的信号，建议先观望。"
     return ""
 
 
@@ -126,6 +123,8 @@ def price_levels(last_close: float | None, cost_price: float | None = None) -> d
 def build_advice_for_watchlist(scan_top: pd.DataFrame) -> list[dict]:
     """未持有、但在掘金Top候选里的股票 -> watch/open建议。scan_top 来自
     `advice/scanner.py::run_scan()` 的 top_pick 返回值（已含behavior信号列）。"""
+    from advice.position_sizing import actionable_invalid_if_open, actionable_invalid_if_watch
+
     cards = []
     for _, row in scan_top.iterrows():
         not_tradable = not row.get("is_tradable", True)
@@ -141,6 +140,12 @@ def build_advice_for_watchlist(scan_top: pd.DataFrame) -> list[dict]:
             risks = _risks_from_behavior(row)
 
         last_close = row.get("close")
+        pack = build_reason_pack(row)
+        pl = price_levels(float(last_close) if pd.notna(last_close) else None)
+        if action == "open":
+            inv = actionable_invalid_if_open(pl.get("stop_loss_price"))
+        else:
+            inv = actionable_invalid_if_watch()
         cards.append({
             "advice_id": str(uuid.uuid4()),
             "symbol": row["symbol"],
@@ -148,11 +153,12 @@ def build_advice_for_watchlist(scan_top: pd.DataFrame) -> list[dict]:
             "rank": int(row["rank"]) if pd.notna(row.get("rank")) else None,
             "action": action,
             "confidence": confidence,
-            "price_levels": price_levels(float(last_close) if pd.notna(last_close) else None),
+            "price_levels": pl,
             "plain_summary": _plain_summary(action, rank=row.get("rank"), not_tradable=not_tradable),
-            "reasons": _reasons_from_factors(row),
+            "reason_one_liner": pack["one_liner"],
+            "reasons": pack["reasons"],
             "risks": risks,
-            "invalid_if": ["模型下一次重新打分排名大幅下降", "行为金融冲突信号升级"],
+            "invalid_if": inv,
             "constraints_applied": ["Tplus1", "涨跌停/停牌过滤"],
             "disclaimer": "仅供研究辅助，不构成投资建议",
         })
@@ -164,13 +170,18 @@ def build_advice_for_positions(
     scan_full: pd.DataFrame,
     concentration: pd.DataFrame,
 ) -> list[dict]:
-    """已持有的股票 -> hold/add/reduce/stop_loss/take_profit建议。
+    """已持有的股票 -> hold/reduce/stop_loss/take_profit/watch 建议（本轮不产出 add）。
     position_summary 来自 `risk/portfolio_risk.py::compute_position_summary()`
     （逐lot，含unrealized_pnl_pct）；scan_full 是当天全量模型排名（不只Top-N，
     用于判断"是否已跌出模型认可范围"）；concentration 来自
     `risk/portfolio_risk.py::compute_concentration()`。"""
     if position_summary.empty:
         return []
+    from advice.position_sizing import (
+        actionable_invalid_if_hold,
+        actionable_invalid_if_position,
+        actionable_invalid_if_watch,
+    )
     agg = position_summary.groupby("symbol", as_index=False).agg(
         shares=("shares", "sum"), cost_value=("cost_value", "sum"), market_value=("market_value", "sum"),
     )
@@ -219,6 +230,21 @@ def build_advice_for_positions(
 
         last_close = last_close_map.get(symbol)
         cost_price = cost_map.get(symbol)
+        pl = price_levels(
+            float(last_close) if pd.notna(last_close) else None,
+            float(cost_price) if pd.notna(cost_price) else None,
+        )
+
+        if action == "watch":
+            inv = actionable_invalid_if_watch()
+        elif action == "hold":
+            inv = actionable_invalid_if_hold(stop_price=pl.get("stop_loss_price"))
+        else:
+            inv = actionable_invalid_if_position(
+                action,
+                stop_price=pl.get("stop_loss_price"),
+                take_profit_price=pl.get("take_profit_price"),
+            )
         cards.append({
             "advice_id": str(uuid.uuid4()),
             "symbol": symbol,
@@ -226,10 +252,7 @@ def build_advice_for_positions(
             "action": action,
             "confidence": confidence,
             "size_pct_nav": [0.0, round(weight, 4)],
-            "price_levels": price_levels(
-                float(last_close) if pd.notna(last_close) else None,
-                float(cost_price) if pd.notna(cost_price) else None,
-            ),
+            "price_levels": pl,
             "plain_summary": _plain_summary(
                 action, pnl_pct=pnl_pct, weight=weight,
                 rank_ok=bool(model_info and model_info.get("rank", 10**9) <= _OPEN_CANDIDATE_RANK_THRESHOLD),
@@ -237,7 +260,7 @@ def build_advice_for_positions(
             ),
             "reasons": reasons,
             "risks": risks,
-            "invalid_if": [f"浮亏超过{_STOP_LOSS_PCT:.0%}", f"浮盈超过{_TAKE_PROFIT_PCT:.0%}且模型排名走弱"],
+            "invalid_if": inv,
             "constraints_applied": ["Tplus1", "单票集中度上限", "涨跌停/停牌过滤"],
             "disclaimer": "仅供研究辅助，不构成投资建议",
         })
@@ -312,10 +335,13 @@ def enrich_cards_with_sizing(
     from advice.entry_rules import next_trade_date
     from advice.paper_broker import _exchange_for
     from advice.position_sizing import (
+        actionable_invalid_if_hold,
         actionable_invalid_if_open,
         actionable_invalid_if_position,
+        actionable_invalid_if_watch,
         compute_open_size,
         compute_sell_shares,
+        invalid_if_is_actionable,
         sizing_params,
     )
 
@@ -358,6 +384,14 @@ def enrich_cards_with_sizing(
         pl = c.get("price_levels") or {}
         last_close = pl.get("last_close")
         if last_close is None or (isinstance(last_close, float) and pd.isna(last_close)):
+            if not invalid_if_is_actionable(c.get("invalid_if")):
+                act = c.get("action")
+                if act == "watch":
+                    c["invalid_if"] = actionable_invalid_if_watch()
+                elif act == "hold":
+                    c["invalid_if"] = actionable_invalid_if_hold(stop_price=pl.get("stop_loss_price"))
+                elif act == "open":
+                    c["invalid_if"] = actionable_invalid_if_open(pl.get("stop_loss_price"))
             out.append(c)
             continue
         price = float(last_close)
@@ -371,10 +405,17 @@ def enrich_cards_with_sizing(
                     f"已达最大同时持仓数 {p['max_concurrent_positions']}，暂不建议新开仓"
                 ]
                 c["plain_summary"] = _plain_summary("watch")
+                c["invalid_if"] = actionable_invalid_if_watch()
                 out.append(c)
                 continue
             stop = pl.get("stop_loss_price")
             if stop is None:
+                c["action"] = "watch"
+                c["confidence"] = 0.0
+                c["size_shares"] = 0
+                c["risks"] = list(c.get("risks") or []) + ["缺少参考止损价，无法以损定仓"]
+                c["plain_summary"] = _plain_summary("watch")
+                c["invalid_if"] = actionable_invalid_if_watch()
                 out.append(c)
                 continue
             sz = compute_open_size(equity, price, float(stop), exchange, cash_cny=cash)
@@ -384,6 +425,7 @@ def enrich_cards_with_sizing(
                 c["risks"] = list(c.get("risks") or []) + [sz.reason or "以损定仓后无法买入 1 手"]
                 c["plain_summary"] = _plain_summary("watch")
                 c["size_shares"] = 0
+                c["invalid_if"] = actionable_invalid_if_watch()
             else:
                 c["size_shares"] = sz.shares
                 c["est_amount_cny"] = sz.est_amount_cny
@@ -416,6 +458,20 @@ def enrich_cards_with_sizing(
                 stop_price=pl.get("stop_loss_price"),
                 take_profit_price=pl.get("take_profit_price"),
             )
+        if not invalid_if_is_actionable(c.get("invalid_if")):
+            act = c.get("action")
+            if act == "open":
+                c["invalid_if"] = actionable_invalid_if_open(pl.get("stop_loss_price"))
+            elif act == "watch":
+                c["invalid_if"] = actionable_invalid_if_watch()
+            elif act == "hold":
+                c["invalid_if"] = actionable_invalid_if_hold(stop_price=pl.get("stop_loss_price"))
+            elif act in ("stop_loss", "reduce", "take_profit", "rebalance"):
+                c["invalid_if"] = actionable_invalid_if_position(
+                    act,
+                    stop_price=pl.get("stop_loss_price"),
+                    take_profit_price=pl.get("take_profit_price"),
+                )
         out.append(c)
     return out
 
@@ -488,6 +544,7 @@ def persist_advice_cards(conn, cards: list[dict], as_of_date: str, model_run_id:
             "reasons_json": json.dumps(c.get("reasons", []), ensure_ascii=False),
             "risks_json": json.dumps(c.get("risks", []), ensure_ascii=False),
             "invalid_if_json": json.dumps(c.get("invalid_if", []), ensure_ascii=False),
+            "reason_one_liner": c.get("reason_one_liner"),
             "model_run_id": model_run_id,
             "size_shares": c.get("size_shares"),
             "est_amount_cny": c.get("est_amount_cny"),
@@ -532,6 +589,7 @@ def load_latest_advice_cards(conn) -> tuple[str | None, list[dict]]:
             "reasons": json.loads(r["reasons_json"]) if r.get("reasons_json") else [],
             "risks": json.loads(r["risks_json"]) if r.get("risks_json") else [],
             "invalid_if": json.loads(r["invalid_if_json"]) if r.get("invalid_if_json") else [],
+            "reason_one_liner": (r.get("reason_one_liner") or "") if "reason_one_liner" in r.index else "",
             "disclaimer": "仅供研究辅助，不构成投资建议",
             "size_shares": r.get("size_shares"),
             "est_amount_cny": r.get("est_amount_cny"),
@@ -543,16 +601,23 @@ def load_latest_advice_cards(conn) -> tuple[str | None, list[dict]]:
     return as_of, cards
 
 
-def generate_daily_advice(top_n_watchlist: int = 30) -> dict:
+def generate_daily_advice(
+    top_n_watchlist: int = 30,
+    *,
+    allow_bj_open: bool | None = None,
+) -> dict:
     """一站式入口：跑一次掘金扫描 + 读当前持仓 + 生成全部建议卡片 + 落库留痕。
-    供 `pages/` Streamlit页面和 `scripts/daily_pipeline.py` 复用，不重复实现。"""
+    供 `pages/` Streamlit页面和 `scripts/daily_pipeline.py` 复用，不重复实现。
+
+    allow_bj_open：None 时读 config；UI 会话可传入覆盖。
+    """
     from advice.entry_rules import build_tomorrow_todos
     from advice.scanner import run_scan
     from common.db import get_connection, init_schema
     from risk.portfolio_optimizer import suggest_rebalance
     from risk.portfolio_risk import compute_concentration, compute_position_summary
 
-    scan_full, scan_top, trade_date = run_scan(top_n=top_n_watchlist)
+    scan_full, scan_top, trade_date = run_scan(top_n=top_n_watchlist, pool_id="hs", source="advice")
     conn = get_connection()
     init_schema(conn)
     position_cards: list[dict] = []
@@ -590,14 +655,20 @@ def generate_daily_advice(top_n_watchlist: int = 30) -> dict:
         )
         position_cards = [c for c in all_cards if c["symbol"] in held_symbols]
         watchlist_cards = [c for c in all_cards if c["symbol"] not in held_symbols]
-        tomorrow_todos = build_tomorrow_todos(all_cards, signal_d, conn, max_items=3)
+        tomorrow_todos = build_tomorrow_todos(
+            all_cards, signal_d, conn, max_items=3, allow_bj_open=allow_bj_open
+        )
 
         model_run_id = None
         try:
-            with open("mlops/registry/champion.json", encoding="utf-8") as f:
+            with open("mlops/registry/champion_hs.json", encoding="utf-8") as f:
                 model_run_id = json.load(f)["run_id"]
         except FileNotFoundError:
-            pass
+            try:
+                with open("mlops/registry/champion.json", encoding="utf-8") as f:
+                    model_run_id = json.load(f)["run_id"]
+            except FileNotFoundError:
+                pass
         persist_advice_cards(conn, all_cards, str(trade_date), model_run_id)
     finally:
         conn.close()
@@ -609,6 +680,72 @@ def generate_daily_advice(top_n_watchlist: int = 30) -> dict:
         "position_cards": position_cards,
         "watchlist_cards": watchlist_cards,
         "tomorrow_todos": tomorrow_todos,
+        "pool_id": "hs",
+    }
+
+
+def run_practice_cycle(
+    paper_account_id: str,
+    *,
+    top_n_watchlist: int = 30,
+    simulate_scope: str = "todos",
+    allow_bj_open: bool | None = None,
+) -> dict:
+    """扫描 → 建议（含股数）→ 纸面批量模拟。供 UI 一键练习，不自动下单。
+
+    simulate_scope:
+      - ``todos``（默认，需求 R4）：只模拟明日待办 ≤3
+      - ``all``：全部可执行卡片（UI 须二次确认）
+    """
+    from advice.paper_broker import simulate_advice_cards
+
+    advice = generate_daily_advice(top_n_watchlist=top_n_watchlist, allow_bj_open=allow_bj_open)
+    if simulate_scope == "all":
+        cards = advice["position_cards"] + advice["watchlist_cards"]
+    else:
+        # 待办已是卡片子集字段；补齐 simulate 所需键
+        cards = []
+        for t in advice.get("tomorrow_todos") or []:
+            cards.append(
+                {
+                    "advice_id": t.get("advice_id"),
+                    "symbol": t["symbol"],
+                    "name": t.get("name"),
+                    "action": t["action"],
+                    "size_shares": t.get("size_shares") or 0,
+                    "exec_date": t.get("exec_date"),
+                }
+            )
+    sim = simulate_advice_cards(paper_account_id, cards)
+    open_top3 = [
+        c
+        for c in advice.get("watchlist_cards", [])
+        if c.get("action") == "open" and int(c.get("size_shares") or 0) >= 100
+    ][:3]
+    return {
+        **advice,
+        "paper_account_id": paper_account_id,
+        "open_top3": open_top3,
+        "simulate_scope": simulate_scope,
+        "simulation": {
+            "filled": sim.filled,
+            "skipped": sim.skipped,
+            "rejected": sim.rejected,
+            "pending": sim.pending,
+            "nav_before": sim.nav_before,
+            "nav_after": sim.nav_after,
+            "reason_counts": sim.reason_counts(),
+            "lines": [
+                {
+                    "advice_id": ln.advice_id,
+                    "symbol": ln.symbol,
+                    "action": ln.action,
+                    "status": ln.status,
+                    "message": ln.message,
+                }
+                for ln in sim.lines
+            ],
+        },
     }
 
 

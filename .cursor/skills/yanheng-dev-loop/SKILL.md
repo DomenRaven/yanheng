@@ -2,16 +2,16 @@
 name: yanheng-dev-loop
 description: >-
   Binds the global eight honors/eight gates skill to this A-share quant repo
-  (stock-quant-system): local paths, champion registry, A-share rules, and
-  repo pitfalls. Use when implementing, reviewing, accepting, documenting, or
-  extending tasks in this workspace (factors, models, ingestion, Streamlit,
-  phase reports, manuals, Git commits). Pair with personal skill
-  eight-honors-eight-gates; do not rewrite the eight sentences.
+  (stock-quant-system): local paths, theory library (gate 1.5), champion
+  registry, A-share rules, and repo pitfalls. Use when implementing, reviewing,
+  accepting, documenting, or extending tasks in this workspace (factors, models,
+  ingestion, Streamlit, phase reports, manuals, Git commits). Pair with personal
+  skill eight-honors-eight-gates; do not rewrite the eight sentences.
 ---
 
 # 研衡绑定（本仓库）
 
-八荣八耻与八闸门的**原文和通用顺序**以个人全局 Skill `eight-honors-eight-gates` 为准（禁止改写八句原文）。
+八荣八耻与八闸门的**原文和通用顺序**以个人全局 Skill `eight-honors-eight-gates` 为准（禁止改写八句原文；闸门 **1.5** 为 2026-09-18 插入，细则见全局 `eight-gates.md`）。
 本 Skill 只把闸门绑到当前 A 股量化仓库。**道德底线 > 完成速度。禁止跳步。**
 
 通用细则仍读全局 Skill 的 `eight-honors.md` / `eight-gates.md`。
@@ -23,8 +23,9 @@ description: >-
 
 ## 本仓库闸门映射
 
-1. **读文档**：顶层 plan 对应条款（不要编辑 plan 文件本身）+ `docs/03-量化方法/` 相关篇 + 已有 `docs/phaseN-acceptance-report.md`。
-2. **定框架**：先搜 `research/` `common/` `ingestion/`；没有可复用实现才新建。
+1. **读文档**：顶层 plan 对应条款（不要编辑 plan 文件本身）+ 已有 `docs/phaseN-acceptance-report.md` + 规格/约束（如 `9.16-散户决策链需求规格.md`）。回答「对照哪条、验收数字是什么」。
+1.5. **读理论**：`docs/03-量化方法/` 及相关专章（`02-经典理论/` `04-风险管理/` `07-产品设计启示/` 等）；索引 `docs/99-参考文献/文献与链接索引.md`。库中没有则期刊/图书馆外搜，原文进 `docs/99-参考文献/papers/`（gitignore）并更新索引与 `papers/MANIFEST.yaml`。体例见 `docs/00-总览/03-阅读路线图.md`「知识库维护约定」。方法缺口也可加载高质量 Skill（如 `zju-lib`）。找不到则写理论缺口。
+2. **定框架**：先搜 `research/` `common/` `ingestion/` `advice/`；没有可复用实现才新建。
 3. **开工实现**：一次一个模块；不做跨 Phase 大改（纯清理除外）。
 4. **测试与打分**：真实数据跑 IC / RankIC / 回测 / p 值 / 覆盖率。UI 用 Playwright 或人工走完整路径。不达标回 2/3。禁止改评估口径。
 5. **验收**：对照该 Phase 验收条款原文。
@@ -50,6 +51,7 @@ description: >-
 
 ## 本仓库额外禁止
 
+- 跳过闸门 1.5 直接定框架
 - 提交 `.env`、`*.duckdb`、真实 API Key
 - 自动下单 / 承诺收益（产品 Won't）
 

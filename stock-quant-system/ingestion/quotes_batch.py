@@ -143,8 +143,21 @@ def sync_quotes_batch(symbols: list[str] | None = None, limit: int | None = None
         targets = targets[:limit]
 
     jobs: list[tuple[str, str, str]] = []
-    stats = {"ok": 0, "skipped_up_to_date": 0, "failed": 0, "rows_written": 0, "failed_symbols": []}
+    stats = {
+        "ok": 0,
+        "skipped_up_to_date": 0,
+        "skipped_exchange_policy": 0,
+        "failed": 0,
+        "rows_written": 0,
+        "failed_symbols": [],
+    }
+    skip_exchanges = set(cfg.get("quotes_daily_skip_exchanges") or [])
+    if skip_exchanges:
+        logger.info("日更策略跳过交易所逐股行情: %s", sorted(skip_exchanges))
     for symbol, exchange, last_date in targets:
+        if exchange in skip_exchanges:
+            stats["skipped_exchange_policy"] += 1
+            continue
         start_date = (last_date + dt.timedelta(days=1)).strftime("%Y%m%d") if last_date else history_start
         if start_date > today_str:
             stats["skipped_up_to_date"] += 1

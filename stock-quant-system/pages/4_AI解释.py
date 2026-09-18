@@ -14,14 +14,14 @@ from llm.explain_assistant import LLMNotConfiguredError, build_context_text, gen
 from llm.news_fetch import fetch_stock_news
 
 apply_theme(page_title="AI解释", page_icon="🤖")
-st.title("🤖 AI解释助手")
+st.title("🤖 AI 解释助手")
 st.caption(
-    "本页只做\"把已算好的结果翻译成人话\"，不用LLM生成预测或买卖建议——所有量化结论都来自"
-    "模型/因子/风险/行为金融模块的真实计算。通义/DeepSeek 都没有自己的实时日历；"
-    "「今天」以本机日期为准，新闻来自东方财富即时检索。需在项目根目录 `.env` "
-    "配置 `DASHSCOPE_API_KEY`；未配置时仍可查看原始结构化数据。"
+    "本页只把已经算好的数字与新闻标题翻译成中文说明，不会用大模型另行给出买卖指令。"
+    "量化结论仍来自模型、因子、风险与行为模块的计算结果。"
+    "「今天」以本机日期为准；新闻来自即时检索。"
+    "请在项目根目录「.env」中配置通义密钥；未配置时仍可查看左侧结构化数据。"
 )
-st.caption(f"本机日历：{dt.date.today().isoformat()}（写入提示词的「今天」）。模型训练记忆停在旧年份是正常现象，不是断网。")
+st.caption(f"本机日历：{dt.date.today().isoformat()}（写入提示词的「今天」）。模型训练数据停在旧年份属正常情况。")
 
 conn = connect_warehouse()
 symbol = render_symbol_picker(conn, key="ai_symbol")
@@ -71,6 +71,19 @@ behavior_flags = {"disposition_flag": disp["disposition_flag"].iloc[0]} if not d
 
 st.subheader(f"{symbol} {name or ''}")
 
+from advice.scan_archive import symbol_rank_history
+
+rank_hist = symbol_rank_history(conn, code, limit=60)
+if rank_hist.empty:
+    st.info("尚无该股票的掘金名次存档。请先到「掘金扫描」运行扫描。")
+else:
+    st.markdown("#### 掘金名次走势")
+    st.caption("名次越小越靠前；仅反映历史扫描结果，不表示未来收益。")
+    chart_df = rank_hist.sort_values("trade_date").set_index("trade_date")[["rank"]]
+    st.line_chart(chart_df)
+    with st.expander("名次明细"):
+        st.dataframe(rank_hist, use_container_width=True, hide_index=True)
+
 # 先做完网络调用再画两列。不要用 st.spinner 包 st.columns：
 # Streamlit 1.53+ 的 TransientNode 在 spinner 结束拆节点时，会触发
 # React removeChild（「被移除的节点不是该节点的子节点」）。
@@ -111,13 +124,13 @@ with col1:
     st.markdown("#### 结构化数据（真实计算结果）")
     st.text(context_text)
 with col2:
-    st.markdown("#### AI解释")
+    st.markdown("#### 中文说明")
     if explanation:
         st.markdown(explanation)
     elif llm_warn:
         st.warning(llm_warn)
     else:
-        st.error(llm_err or "解释生成失败")
+        st.error(llm_err or "说明生成失败")
 
 if news_titles:
     st.divider()

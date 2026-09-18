@@ -7,7 +7,14 @@ import streamlit as st
 
 from advice.advice_engine import load_latest_advice_cards
 from advice.entry_rules import build_tomorrow_todos
-from common.ui_theme import action_meta, apply_theme, connect_warehouse, close_warehouse, section_header
+from common.ui_theme import (
+    action_meta,
+    apply_theme,
+    close_warehouse,
+    connect_warehouse,
+    require_warehouse_for_decisions,
+    section_header,
+)
 
 apply_theme(page_title="明日待办", page_icon="📋")
 st.title("📋 明日待办")
@@ -18,6 +25,7 @@ st.caption(
 
 conn = connect_warehouse()
 try:
+    require_warehouse_for_decisions(conn)
     as_of, cards = load_latest_advice_cards(conn)
     if not as_of or not cards:
         st.info("尚无建议记录。请先在「持仓与建议」页点击「生成/刷新建议卡片」。")
@@ -46,10 +54,13 @@ try:
                     st.warning(f"暂不可按规则执行：{item.get('block_reason') or '—'}")
                 if item.get("plain_summary"):
                     st.caption(item["plain_summary"])
+                if item.get("industry_code"):
+                    st.caption(f"行业代码 {item['industry_code']}（开仓待办：同一行业最多 1 只）")
         section_header("说明", level=2)
         st.markdown(
-            "- 待办来自同一套 `entry_rules` 纯函数，与回测脚本共用逻辑。\n"
-            "- 不等于自动下单；模拟成交请在「持仓与建议 → 本机模拟盘」操作。"
+            "- 待办与回测脚本共用同一套入场规则。\n"
+            "- 开仓候选同一行业最多 1 只（适合小资金分散）；止损与减仓不受此条限制。\n"
+            "- 本页不会自动下单；模拟成交请到「持仓与建议 → 本机模拟盘」操作。"
         )
 finally:
     close_warehouse(conn)

@@ -25,7 +25,7 @@ FillSource = Literal["sim", "user_confirmed_live"]
 
 @dataclass(frozen=True)
 class PaperOrderResult:
-    status: Literal["filled", "rejected", "skipped"]
+    status: Literal["filled", "rejected", "skipped", "pending"]
     trade_id: str | None
     reject_reason: str | None
     price: float | None
@@ -213,7 +213,15 @@ def execute_paper_order(
         tr = _tradability_row(conn, symbol, trade_date)
         open_px = price_override if price_override is not None else tr.get("open")
         if open_px is None:
-            return PaperOrderResult("rejected", None, "缺少开盘价", None, None, get_cash(conn, account_id))
+            # 信号日晚间常见：exec_date 尚无行情。按需求 R4：待执行，不算拒绝（亦不落假成交）。
+            return PaperOrderResult(
+                "pending",
+                None,
+                "执行日尚无开盘价（待开盘后再练）",
+                None,
+                None,
+                get_cash(conn, account_id),
+            )
         exec_px = float(open_px) if price_override is not None else _apply_slippage(side, float(open_px))
 
         if side == "buy":
@@ -412,9 +420,18 @@ class AdviceSimSummary:
     filled: int
     skipped: int
     rejected: int
+    pending: int
     nav_before: float
     nav_after: float
     lines: tuple[AdviceSimLine, ...]
+
+    def reason_counts(self) -> dict[str, int]:
+        """按 message 汇总（UI 原因分布）。"""
+        out: dict[str, int] = {}
+        for ln in self.lines:
+            key = ln.message or ln.status
+            out[key] = out.get(key, 0) + 1
+        return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
 
 
 def simulate_advice_cards(
@@ -423,7 +440,10 @@ def simulate_advice_cards(
     *,
     as_of_nav: dt.date | None = None,
 ) -> AdviceSimSummary:
-    """按建议卡片批量模拟成交（幂等 advice_id；先卖后买）。M9/M3 闭环入口。"""
+    """按建议卡片批量模拟成交（幂等 advice_id；先卖后买）。M9/M3 闭环入口。
+
+    缺执行日开盘价 → pending（不算拒绝）。见 requirements-20260918 R4。
+    """
     from advice.entry_rules import entry_blocked_at_open
     from common.db import get_connection, init_schema
 
@@ -441,10 +461,10 @@ def simulate_advice_cards(
     read_conn = get_connection()
     init_schema(read_conn)
     lines: list[AdviceSimLine] = []
-    filled = skipped = rejected = 0
+    filled = skipped = rejected = pending = 0
     try:
         for card in actionable:
-            aid = card["advice_id"]
+            aid = str(card.get("advice_id") or "")
             sym = card["symbol"]
             action = card["action"]
             shares = int(card["size_shares"])
@@ -467,7 +487,7 @@ def simulate_advice_cards(
                 side=side,
                 shares=shares,
                 trade_date=trade_date,
-                advice_id=aid,
+                advice_id=aid or None,
                 source="sim",
             )
             if r.status == "filled":
@@ -475,6 +495,9 @@ def simulate_advice_cards(
                 lines.append(
                     AdviceSimLine(aid, sym, action, "filled", f"价 {r.price:.2f}" if r.price else None)
                 )
+            elif r.status == "pending":
+                pending += 1
+                lines.append(AdviceSimLine(aid, sym, action, "pending", r.reject_reason))
             elif r.status == "skipped":
                 skipped += 1
                 lines.append(AdviceSimLine(aid, sym, action, "skipped", r.reject_reason))
@@ -487,7 +510,7 @@ def simulate_advice_cards(
     with write_session(init=True) as conn:
         nav_after = mark_to_market_nav(conn, account_id, nav_day)["nav_cny"]
 
-    return AdviceSimSummary(filled, skipped, rejected, nav_before, nav_after, tuple(lines))
+    return AdviceSimSummary(filled, skipped, rejected, pending, nav_before, nav_after, tuple(lines))
 
 
 def paper_weekly_report(conn, account_id: str, *, as_of: dt.date | None = None) -> dict:

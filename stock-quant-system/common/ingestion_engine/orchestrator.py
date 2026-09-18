@@ -25,6 +25,8 @@ logger = logging.getLogger("ingestion_engine.orchestrator")
 STEP_ORDER = [
     "universe",
     "quotes",
+    "quotes_decision",  # 日更：仅持仓/待办量价（R3）
+    "tushare_bse_quotes",  # 轻量：北交所/CDR 日线（Tushare）；日更用，全量另有 tushare_prices
     "fundamentals",
     "income_statement",
     "reference_data",
@@ -76,6 +78,43 @@ def _run_quotes(limit: int | None) -> dict:
     from ingestion.quotes_batch import sync_quotes_batch
 
     return sync_quotes_batch(limit=limit)
+
+
+def _run_quotes_decision(limit: int | None) -> dict:
+    """日更决策量价：持仓 + 模拟持仓 + 近 7 日建议标的；bj 走 Tushare 强制刷 adj。"""
+    from common.db import get_connection, init_schema
+    from common.decision_scope import decision_quote_symbols, split_hs_bj
+    from ingestion.quotes_batch import sync_quotes_batch
+    from ingestion.tushare_prices import sync_bse_cdr_qfq_quotes
+
+    conn = get_connection()
+    init_schema(conn)
+    try:
+        symbols = decision_quote_symbols(conn)
+        hs, bj = split_hs_bj(conn, symbols)
+    finally:
+        conn.close()
+
+    if limit is not None:
+        hs = hs[:limit]
+        bj = bj[: max(0, limit - len(hs))]
+
+    out: dict = {"scope_n": len(symbols), "hs_n": len(hs), "bj_n": len(bj)}
+    if not symbols:
+        out["status"] = "empty_scope"
+        return out
+    if hs:
+        out["hs"] = sync_quotes_batch(symbols=hs)
+    if bj:
+        out["bj"] = sync_bse_cdr_qfq_quotes(symbols=bj, refresh_adj=True)
+    return out
+
+
+def _run_tushare_bse_quotes(limit: int | None) -> dict:
+    """日更轻量步：只补北交所/CDR qfq；补缺口前强制刷新复权因子（见 tushare_prices 注释）。"""
+    from ingestion.tushare_prices import sync_bse_cdr_qfq_quotes
+
+    return sync_bse_cdr_qfq_quotes(limit=limit, refresh_adj=True)
 
 
 def _run_fundamentals(limit: int | None) -> dict:
@@ -131,6 +170,8 @@ def _run_tushare_behavior(limit: int | None) -> dict:
 STEP_FUNCS = {
     "universe": lambda args: _run_universe(),
     "quotes": lambda args: _run_quotes(args.quotes_limit),
+    "quotes_decision": lambda args: _run_quotes_decision(args.quotes_limit),
+    "tushare_bse_quotes": lambda args: _run_tushare_bse_quotes(args.tushare_limit),
     "fundamentals": lambda args: _run_fundamentals(args.fundamentals_limit),
     "income_statement": lambda args: _run_income_statement(args.fundamentals_limit),
     "reference_data": lambda args: _run_reference_data(),

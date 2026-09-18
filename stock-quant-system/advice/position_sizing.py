@@ -147,11 +147,37 @@ def compute_sell_shares(
     )
 
 
+EMPTY_TALK_TOKENS = ("排名大幅下降", "仓位自己把控")
+
+
+def invalid_if_is_actionable(items: list[str] | None) -> bool:
+    """M8：失效条件必须能在盘中/次日核对；空列表或空话不算。"""
+    if not items:
+        return False
+    blob = "".join(str(x) for x in items)
+    return not any(tok in blob for tok in EMPTY_TALK_TOKENS)
+
+
 def actionable_invalid_if_open(stop_price: float | None) -> list[str]:
     return [
         "下一交易日开盘价触及涨停不可买入",
         f"收盘价低于参考止损价 {stop_price:.2f}" if stop_price else "收盘价低于参考止损价",
         "模型排名跌出前 50",
+    ]
+
+
+def actionable_invalid_if_watch() -> list[str]:
+    """观望也可盘中核对（规格 M8）：禁止「排名大幅下降」空话。"""
+    return [
+        "下一交易日开盘涨停或停牌（继续观望，不追买）",
+        "模型排名仍在前 50 且以损定仓后买得起 1 手 → 才考虑转为可执行开仓",
+    ]
+
+
+def actionable_invalid_if_hold(*, stop_price: float | None = None) -> list[str]:
+    return [
+        f"收盘价跌破参考止损价 {stop_price:.2f}" if stop_price else "浮亏触及约 8% 参考止损",
+        "单票占净值超过 15%",
     ]
 
 

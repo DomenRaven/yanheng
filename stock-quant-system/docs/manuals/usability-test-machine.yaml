@@ -1,0 +1,134 @@
+# 机器可读可用性测试规格（研衡 Phase 5）
+# 运行：python -m scripts.run_usability_machine_tests
+# 人工补充：docs/manuals/人工可用性测试指南.md
+
+version: "2026-09-17"
+product: yanheng-streamlit
+preconditions:
+  cwd: stock-quant-system
+  env:
+    - name: warehouse_ready
+      check: scripts.check_warehouse_readiness
+      expect_exit: 0
+      blocking_for: [decision_chain]
+
+suites:
+  - id: core_regression
+    title: Phase 5 回归脚本
+    automated: true
+    cases:
+      - id: M-R01
+        run: scripts/test_paper_broker.py
+        expect_exit: 0
+      - id: M-R02
+        run: scripts/test_advice_sizing.py
+        expect_exit: 0
+      - id: M-R03
+        run: scripts/test_entry_rules.py
+        expect_exit: 0
+      - id: M-R04
+        run: scripts/test_paper_batch_simulate.py
+        expect_exit: 0
+      - id: M-R05
+        run: scripts/audit_phase5_spec_compliance.py
+        expect_exit: 0
+      - id: M-R06
+        run: scripts/test_advice_trace.py
+        expect_exit: 0
+      - id: M-R07
+        run: scripts/test_reason_pack.py
+        expect_exit: 0
+      - id: M-R08
+        run: scripts/test_industry_cap.py
+        expect_exit: 0
+      - id: M-R09
+        run: scripts/test_m8_invalid_if.py
+        expect_exit: 0
+      - id: M-R10
+        run: scripts/test_champion_only.py
+        expect_exit: 0
+      - id: M-R11
+        run: scripts/demo_retail_chain.py
+        expect_exit: 0
+
+  - id: data_readiness
+    title: 投产数据门槛
+    automated: true
+    cases:
+      - id: M-D01
+        run_module: scripts.check_warehouse_readiness
+        expect_exit: 0
+      - id: M-D02
+        assert_python: |
+          from common.db import get_ui_connection, init_schema
+          from common.warehouse_readiness import assess_warehouse_readiness, effective_market_quote_date
+          c = get_ui_connection()
+          init_schema(c)
+          rep = assess_warehouse_readiness(c)
+          eff = effective_market_quote_date(c)
+          c.close()
+          assert rep.ready, rep.blockers
+          assert eff is not None
+
+  - id: ui_smoke
+    title: UI 模块与页面语法
+    automated: true
+    cases:
+      - id: M-U01
+        compile_glob: "pages/*.py"
+      - id: M-U02
+        compile_files: [app.py, common/ui_theme.py]
+      - id: M-U03
+        assert_python: |
+          from common.symbol_lookup import lookup_universe
+          from common.db import get_ui_connection, init_schema
+          c = get_ui_connection()
+          init_schema(c)
+          df = lookup_universe(c, "紫金矿业")
+          c.close()
+          assert not df.empty and "601899" in df["symbol"].values
+
+  - id: advice_persistence
+    title: 建议落盘与读取
+    automated: true
+    requires: warehouse_ready
+    cases:
+      - id: M-A01
+        assert_python: |
+          from common.db import get_ui_connection, init_schema
+          from advice.advice_engine import load_latest_advice_cards
+          c = get_ui_connection()
+          init_schema(c)
+          as_of, cards = load_latest_advice_cards(c)
+          c.close()
+          assert as_of, "需要至少一次「生成建议」以测复盘/待办"
+          assert cards, "advice_log 为空"
+          c0 = cards[0]
+          for k in ("advice_id", "symbol", "action", "disclaimer"):
+              assert k in c0 or k == "disclaimer"
+
+  - id: streamlit_http
+    title: Streamlit 页面无 Traceback（需 --with-streamlit）
+    automated: true
+    optional: true
+    cases:
+      - id: M-S01
+        streamlit_url: /
+        forbid_text: ["Traceback", "ModuleNotFoundError", "KeyError:"]
+      - id: M-S02
+        streamlit_url: /1_持仓与建议
+        forbid_text: ["Traceback"]
+      - id: M-S03
+        streamlit_url: /8_明日待办
+        forbid_text: ["Traceback"]
+      - id: M-S04
+        streamlit_url: /2_掘金扫描
+        forbid_text: ["Traceback"]
+
+manual_only:
+  - id: H-001
+    title: 建议卡片 10 秒内读懂动作与股数
+  - id: H-002
+    title: 一键练习闭环端到端（含模拟净值变化）
+  - id: H-003
+    title: 复盘页 M15 确认成交表单

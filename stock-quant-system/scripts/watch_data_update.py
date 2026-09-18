@@ -19,6 +19,8 @@ LOG_DIR = ROOT / "data" / "logs"
 STEP_ORDER = [
     "universe",
     "quotes",
+    "quotes_decision",
+    "tushare_bse_quotes",
     "fundamentals",
     "income_statement",
     "corporate_actions",
@@ -35,6 +37,8 @@ PARALLEL = frozenset({"fundamentals", "income_statement", "corporate_actions"})
 STEP_PRIOR_S: dict[str, float] = {
     "universe": 180.0,
     "quotes": 5200.0,
+    "quotes_decision": 120.0,
+    "tushare_bse_quotes": 900.0,  # ~350 票；强制刷新 adj 后转 qfq
     "fundamentals": 6200.0,
     "income_statement": 4000.0,
     "corporate_actions": 9100.0,
@@ -48,6 +52,8 @@ STEP_PRIOR_S: dict[str, float] = {
 STEP_LABEL = {
     "universe": "股票池",
     "quotes": "日 K 行情",
+    "quotes_decision": "持仓/待办行情",
+    "tushare_bse_quotes": "北交所/CDR 日线",
     "fundamentals": "财务比率",
     "income_statement": "利润表",
     "corporate_actions": "股本/分红",
@@ -156,7 +162,8 @@ def parse_log(text: str) -> dict:
         "corporate_actions": "corporate_actions",
         "sync_adj_factor": "tushare_prices",
         "sync_fundamentals_bse_tushare": "fundamentals",
-        "sync_bse_cdr_qfq": "tushare_prices",
+        # 日更轻量步与周末 tushare_prices 共用同一 tqdm 名；有 Step 行时以后者为准
+        "sync_bse_cdr_qfq": "tushare_bse_quotes",
     }
     if not current_step and tqdm_by_desc:
         for desc in tqdm_by_desc:
@@ -179,6 +186,7 @@ def _step_eta_from_tqdm(step: str, parsed: dict) -> float | None:
         "fundamentals": "fundamentals_batch",
         "income_statement": "income_statement_batch[tushare]",
         "corporate_actions": "corporate_actions",
+        "tushare_bse_quotes": "sync_bse_cdr_qfq",
         "tushare_prices": "sync_adj_factor",
     }
     desc = desc_map.get(step)

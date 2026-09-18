@@ -161,8 +161,19 @@ def _raw_daily_to_qfq(daily: pd.DataFrame, adj: pd.DataFrame, symbol: str) -> pd
     ].drop_duplicates(subset=["symbol", "trade_date", "adjust"])
 
 
-def sync_bse_cdr_qfq_quotes(symbols: list[str] | None = None, limit: int | None = None) -> dict:
-    """补东方财富失败留下的缺口：在市北交所日线 + 科创板 CDR 689009，写入 qfq。"""
+def sync_bse_cdr_qfq_quotes(
+    symbols: list[str] | None = None,
+    limit: int | None = None,
+    *,
+    end_date: str | None = None,
+    refresh_adj: bool = True,
+) -> dict:
+    """补东方财富失败留下的缺口：在市北交所日线 + 科创板 CDR 689009，写入 qfq。
+
+    经验（2026-09-18）：库内已有旧 `adj_factor` 但缺最近交易日时，若只在
+    `adj.empty` 时才拉复权因子，会出现「复权因子无法对齐日线」、整批 rows_written=0。
+    默认每次补缺口前 **强制刷新** 该票复权因子再转 qfq。
+    """
     cfg_start = get_config()["ingestion"]["history_start_date"]
     conn = get_connection()
     init_schema(conn)
@@ -189,33 +200,79 @@ def sync_bse_cdr_qfq_quotes(symbols: list[str] | None = None, limit: int | None 
     if limit:
         targets = targets[:limit]
 
-    stats = {"ok": 0, "empty": 0, "failed": 0, "skipped_up_to_date": 0, "rows_written": 0, "failed_symbols": []}
+    stats = {
+        "ok": 0,
+        "empty": 0,
+        "failed": 0,
+        "skipped_up_to_date": 0,
+        "rows_written": 0,
+        "adj_refreshed": 0,
+        "failed_symbols": [],
+    }
     today = pd.Timestamp.today().strftime("%Y%m%d")
+    end = end_date or today
     fetch = retry_on_failure()(_fetch_listed_daily)
+    fetch_adj = retry_on_failure()(_fetch_adj_factor)
 
     for i, (symbol, ts_code) in enumerate(tqdm(targets, desc="sync_bse_cdr_qfq")):
         last = last_qfq.get(symbol)
         start = (pd.Timestamp(last) + pd.Timedelta(days=1)).strftime("%Y%m%d") if last else cfg_start
-        if start > today:
+        if start > end:
             stats["skipped_up_to_date"] += 1
             continue
         try:
             raw = fetch(ts_code, start)
+            if raw is None or getattr(raw, "empty", True):
+                stats["empty"] += 1
+                polite_sleep()
+                continue
+            # 可选截断到 end（YYYYMMDD）
+            raw = raw.copy()
+            if "trade_date" in raw.columns:
+                td = raw["trade_date"].astype(str).str.replace("-", "", regex=False)
+                raw = raw.loc[td <= end]
+            if raw.empty:
+                stats["empty"] += 1
+                polite_sleep()
+                continue
+
             adj = conn.execute(
                 "SELECT trade_date, adj_factor FROM adj_factor WHERE symbol = ?",
                 [symbol],
             ).df()
-            if adj.empty:
-                raw_adj = retry_on_failure()(_fetch_adj_factor)(ts_code)
-                adj = _normalize_adj_factor(raw_adj, symbol)
-                if not adj.empty:
-                    upsert(conn, "adj_factor", ["symbol", "trade_date"], adj)
+            need_adj = refresh_adj or adj.empty
+            if need_adj:
+                try:
+                    raw_adj = fetch_adj(ts_code)
+                    fresh = _normalize_adj_factor(raw_adj, symbol)
+                    if not fresh.empty:
+                        upsert(conn, "adj_factor", ["symbol", "trade_date"], fresh)
+                        adj = fresh
+                        stats["adj_refreshed"] += 1
+                except Exception as adj_exc:  # noqa: BLE001
+                    if adj.empty:
+                        raise
+                    logger.warning(
+                        "sync_bse_cdr_qfq: %s 刷新复权因子失败，沿用库内旧值: %s: %s",
+                        symbol,
+                        type(adj_exc).__name__,
+                        adj_exc,
+                    )
+
             norm = _raw_daily_to_qfq(raw, adj, symbol)
             if norm.empty:
                 stats["empty"] += 1
             else:
-                stats["rows_written"] += upsert(conn, "daily_quotes", ["symbol", "trade_date", "adjust"], norm)
-                stats["ok"] += 1
+                # 再次按 end 截断（norm 的 trade_date 已是 date）
+                end_d = pd.to_datetime(end, format="%Y%m%d").date()
+                norm = norm[norm["trade_date"] <= end_d]
+                if norm.empty:
+                    stats["empty"] += 1
+                else:
+                    stats["rows_written"] += upsert(
+                        conn, "daily_quotes", ["symbol", "trade_date", "adjust"], norm
+                    )
+                    stats["ok"] += 1
         except Exception as exc:  # noqa: BLE001
             stats["failed"] += 1
             stats["failed_symbols"].append(symbol)
@@ -234,11 +291,12 @@ def sync_bse_cdr_qfq_quotes(symbols: list[str] | None = None, limit: int | None 
 
 
 def sync_all_tushare_prices(limit: int | None = None) -> dict:
+    """全量 Tushare 价格相关：复权因子 + 退市 raw + 北交所/CDR qfq（含强制刷新 adj）。"""
     results = {}
     logger.info("=== Tushare 复权因子 + 退市股历史行情 开始 ===")
     results["adj_factor"] = sync_adj_factor(limit=limit)
     results["delisted_daily_quotes"] = sync_delisted_daily_quotes(limit=limit)
-    results["bse_cdr_qfq_quotes"] = sync_bse_cdr_qfq_quotes(limit=limit)
+    results["bse_cdr_qfq_quotes"] = sync_bse_cdr_qfq_quotes(limit=limit, refresh_adj=True)
     logger.info("=== Tushare 复权因子 + 退市股历史行情 完成: %s ===", results)
     return results
 

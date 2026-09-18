@@ -191,8 +191,25 @@ def walk_forward_oos_scores(
 def run_training(
     panel_path: str = "data/feature_panel.parquet",
     registry_dir: str = "mlops/registry",
+    *,
+    pool_id: str | None = None,
 ) -> dict:
     panel = pd.read_parquet(panel_path)
+    if pool_id:
+        from advice.champion_registry import POOL_BJ, POOL_HS
+
+        if "exchange" not in panel.columns:
+            raise ValueError("面板缺少 exchange 列，无法分池训练")
+        before = len(panel)
+        if pool_id == POOL_HS:
+            panel = panel[panel["exchange"].isin(["sh", "sz"])].copy()
+        elif pool_id == POOL_BJ:
+            panel = panel[panel["exchange"] == "bj"].copy()
+        else:
+            raise ValueError(f"未知 pool_id={pool_id}")
+        logger.info("分池训练 pool=%s：%d → %d 行", pool_id, before, len(panel))
+        if panel.empty:
+            raise ValueError(f"池 {pool_id} 训练面板为空")
     panel = add_forward_return(panel)
     panel = attach_triple_barrier_labels(panel)
     panel = panel.dropna(subset=["label"])
@@ -259,6 +276,7 @@ def run_training(
     metadata = {
         "run_id": run_id,
         "trained_at": dt.datetime.now().isoformat(),
+        "pool_id": pool_id,
         "feature_cols": feature_cols,
         "n_rows_total": len(panel),
         "n_dates_total": n_dates,

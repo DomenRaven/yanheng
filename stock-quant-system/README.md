@@ -5,29 +5,33 @@
 对应总体方案：`c:\Users\MAC\.cursor\plans\个人炒股辅助本地应用_76077b1a.plan.md`
 理论依据：`../docs/`（本仓库上一级的理论库，见 `../README.md`）
 
-当前进度：**Phase 0 / 0.5 / 0.6 / 0.7 / 1 / 2 / 3 / 4 全部验收完成**；**Phase 5 需求已对齐、实现未开工**（因子研究+LightGBM排序模型+
+当前进度：**Phase 0 / 0.5 / 0.6 / 0.7 / 1 / 2 / 3 / 4 全部验收完成**；**Phase 5 Must 主链已验收**（模拟盘、可执行建议股数、明日待办、复盘/M15、批量模拟与一键练习闭环）；Should 与部分文档仍待补。因子研究+LightGBM排序模型+
 全市场扫描首轮落地，样本外多头组合扣费后相对基准超额收益统计显著 p=0.0044；模型生命周期
 冠军-挑战者机制+漂移监控+行为金融代理信号层已接入掘金扫描；深度学习GNN挑战者已同协议评估，
 结论是维持LightGBM为生产冠军；Phase 4持仓驾驶舱+场景化建议引擎+组合优化再平衡+风险仪表盘+
 LLM解释层已上线Streamlit本地应用，对齐`docs/00-总览/02-产品定位与边界.md`全部Must/Should
 条款）。项目按MVP路线图（`docs/07-产品设计启示/03-MVP路线图.md`）四个阶段的Must/Should范围
 已全部覆盖，Won't清单（自动下单/高频/收益承诺）严格未触碰。Phase 5（完整散户链+模拟盘）
-的需求规格与对照见 `docs/9.16-散户决策链需求规格.md`，状态见 `docs/9.16-项目状态报告.md`。
+的需求规格见 `docs/9.16-散户决策链需求规格.md`，验收见 `docs/phase5-acceptance-report.md`，
+投产日课见 `docs/production-daily-runbook.md`。
 
 - Phase 0-0.7 验收结果与真实缺口清单：`docs/phase0-acceptance-report.md`
 - Phase 1 因子/模型/回测结果与方法论边界：`docs/phase1-acceptance-report.md`
 - Phase 2 模型生命周期管理+行为金融信号层结果：`docs/phase2-acceptance-report.md`
 - Phase 3 深度学习挑战者评估结果（结论：维持LightGBM基线）：`docs/phase3-acceptance-report.md`
 - Phase 4 应用层（持仓/建议/风险/组合优化/LLM解释）验收结果：`docs/phase4-acceptance-report.md`
-- Phase 5 散户决策链需求规格（2026-09-16，含实现对照）：`docs/9.16-散户决策链需求规格.md`
-- Phase 5 项目状态报告（同日）：`docs/9.16-项目状态报告.md`
+- Phase 5 散户决策链验收（模拟盘 A–D + 闭环补强）：`docs/phase5-acceptance-report.md`
+- Phase 5 投产日课（数据更新 + 日常决策链）：`docs/production-daily-runbook.md`
+- 数据维护策略 + Windows 计划任务安装：`docs/data-maintenance-policy.md`、`docs/manuals/windows-scheduled-maintenance.md`
 - Phase 5 开发文档：`docs/phase5-development.md`
 - Phase 5 约束文档：`docs/phase5-constraints.md`
 - Phase 5 分阶段对接（模拟盘 A–D）：`docs/retail-complete-phase5-handoff.md`
 - 第四轮理论原文摘录（父目录）：`../docs/99-参考文献/notes/2026-09-16-散户决策链原文摘录.md`
 - 可用性测试通过后的UI优化（放大字体/建议卡片改版/今日决策速览/行情图表/名词解释/历史建议复盘/
   一键启动exe打包）：`docs/ux-upgrade-notes.md`
-- 用户手册 / 开发者手册 / 人工可用性测试指南（Word）：`docs/manuals/`
+- 用户手册（**阅读请打开 HTML**）：`docs/manuals/用户使用说明书.html`  
+  （源稿 Markdown：`docs/manuals/用户使用说明书.md`；可用 `python -m scripts.build_user_manual_html` 重新生成）
+- 开发者手册 / 人工可用性测试指南：`docs/manuals/`
 - 第二轮人工测试清单（Markdown，边测边勾）：`docs/manuals/人工可用性测试指南.md`
 - 本项目的开发工作流与道德约束：`.cursor/rules/quant-dev-loop.mdc`、
   `.cursor/rules/vibe-coding-ethics.mdc`；同内容已做成可加载 Skill：
@@ -120,7 +124,9 @@ stock-quant-system/
 │   └── explain_assistant.py      # 通义千问（可切 DeepSeek）：翻译结构化信号+带时间戳的新闻；本机日期注入提示词
 ├── mlops/
 │   ├── registry/<run_id>/        # model.pkl + metadata.json，每次训练一份
-│   ├── registry/champion.json    # 当前冠军模型指针
+│   ├── registry/champion_hs.json # 沪深池冠军指针（正式）
+│   ├── registry/champion_bj.json # 北交所池冠军指针
+│   ├── registry/champion.json    # 兼容旧路径（与 hs 同步）
 │   ├── registry/promotion_log.jsonl  # 模型版本演进历史（每次晋升决策留痕）
 │   ├── retrain_schedule.py       # 定期重训 + 冠军-挑战者晋升门禁(CD4ML)
 │   └── drift_monitor.py          # 特征PSI + Walk-Forward趋势 + 生产样本外IC + 滚动夏普

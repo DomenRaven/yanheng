@@ -33,12 +33,39 @@ logger = logging.getLogger("mlops.retrain_schedule")
 _DEFAULT_TOLERANCE = 0.01
 
 
-def _read_champion(registry_dir: Path) -> dict | None:
+def _read_champion(registry_dir: Path, pool_id: str | None = None) -> dict | None:
+    """读分池冠军；pool_id=None 时读 legacy champion.json（兼容旧调用）。"""
+    if pool_id:
+        path = registry_dir / f"champion_{pool_id}.json"
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        if pool_id == "hs":
+            legacy = registry_dir / "champion.json"
+            if legacy.exists():
+                with open(legacy, encoding="utf-8") as f:
+                    return json.load(f)
+        return None
     champion_file = registry_dir / "champion.json"
     if not champion_file.exists():
         return None
     with open(champion_file, encoding="utf-8") as f:
         return json.load(f)
+
+
+def _write_champion(registry_dir: Path, payload: dict, pool_id: str | None = None) -> None:
+    if pool_id:
+        path = registry_dir / f"champion_{pool_id}.json"
+        payload = {**payload, "pool_id": pool_id}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        if pool_id == "hs":
+            # 同步 legacy 指针，兼容旧 UI/审计
+            with open(registry_dir / "champion.json", "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        return
+    with open(registry_dir / "champion.json", "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 def _read_metadata(registry_dir: Path, run_id: str) -> dict:
@@ -121,6 +148,8 @@ def run_weekly_retrain(
     panel_start_date: str = "20160101",
     tolerance: float = _DEFAULT_TOLERANCE,
     rebuild_panel: bool = True,
+    *,
+    pool_id: str | None = None,
 ) -> dict:
     from research.panel import build_feature_panel
     from research.train_lightgbm import run_training
@@ -137,12 +166,12 @@ def run_weekly_retrain(
     else:
         logger.info("跳过面板重建，直接用现有 %s 训练挑战者", panel_path)
 
-    logger.info("训练挑战者模型...")
-    challenger_metadata = run_training(panel_path=panel_path, registry_dir=registry_dir)
+    logger.info("训练挑战者模型 pool=%s ...", pool_id or "all")
+    challenger_metadata = run_training(panel_path=panel_path, registry_dir=registry_dir, pool_id=pool_id)
     challenger_run_id = challenger_metadata["run_id"]
     logger.info("挑战者训练完成 run_id=%s，walk_forward=%s", challenger_run_id, challenger_metadata["walk_forward_oos"])
 
-    champion = _read_champion(registry_path)
+    champion = _read_champion(registry_path, pool_id=pool_id)
     champion_run_id = champion["run_id"] if champion else None
     champion_metadata = _read_metadata(registry_path, champion_run_id) if champion_run_id else None
 
@@ -150,19 +179,17 @@ def run_weekly_retrain(
     decision_time = dt.datetime.now().isoformat()
 
     if promote:
-        with open(registry_path / "champion.json", "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "run_id": challenger_run_id,
-                    "promoted_at": decision_time,
-                    "reason": reason,
-                    "previous_champion": champion_run_id,
-                },
-                f,
-                ensure_ascii=False,
-                indent=2,
-            )
-        logger.info("挑战者 %s 已晋升为冠军: %s", challenger_run_id, reason)
+        _write_champion(
+            registry_path,
+            {
+                "run_id": challenger_run_id,
+                "promoted_at": decision_time,
+                "reason": reason,
+                "previous_champion": champion_run_id,
+            },
+            pool_id=pool_id,
+        )
+        logger.info("挑战者 %s 已晋升为冠军(pool=%s): %s", challenger_run_id, pool_id, reason)
     else:
         logger.info("挑战者 %s 未晋升，维持冠军 %s: %s", challenger_run_id, champion_run_id, reason)
 
@@ -170,6 +197,7 @@ def run_weekly_retrain(
         registry_path,
         {
             "decision_time": decision_time,
+            "pool_id": pool_id,
             "challenger_run_id": challenger_run_id,
             "challenger_walk_forward_rank_ic": challenger_metadata.get("walk_forward_oos", {}).get("rank_ic_mean"),
             "champion_run_id_before": champion_run_id,
@@ -181,6 +209,7 @@ def run_weekly_retrain(
     )
 
     return {
+        "pool_id": pool_id,
         "challenger_run_id": challenger_run_id,
         "promoted": promote,
         "reason": reason,
@@ -198,10 +227,34 @@ if __name__ == "__main__":
     parser.add_argument("--tolerance", type=float, default=_DEFAULT_TOLERANCE)
     parser.add_argument("--no-rebuild-panel", action="store_true", help="跳过面板重建，直接用现有parquet训练(调试用)")
     parser.add_argument("--bootstrap", action="store_true", help="把已有最新run设为初始冠军，不重新训练")
+    parser.add_argument(
+        "--pool",
+        choices=["hs", "bj"],
+        default=None,
+        help="分池训练并写入 champion_{pool}.json；省略则写 legacy champion.json（全市场面板）",
+    )
+    parser.add_argument(
+        "--pools",
+        action="store_true",
+        help="依次训练 hs 与 bj（bj 样本短时可能 Walk-Forward 折数不足，见报告局限）",
+    )
     args = parser.parse_args()
 
     if args.bootstrap:
         print(bootstrap_champion(args.registry_dir))
+        raise SystemExit(0)
+
+    if args.pools:
+        out = {}
+        for pid in ("hs", "bj"):
+            out[pid] = run_weekly_retrain(
+                registry_dir=args.registry_dir,
+                panel_start_date=args.panel_start,
+                tolerance=args.tolerance,
+                rebuild_panel=(pid == "hs") and (not args.no_rebuild_panel),
+                pool_id=pid,
+            )
+        print(out)
         raise SystemExit(0)
 
     result = run_weekly_retrain(
@@ -209,5 +262,6 @@ if __name__ == "__main__":
         panel_start_date=args.panel_start,
         tolerance=args.tolerance,
         rebuild_panel=not args.no_rebuild_panel,
+        pool_id=args.pool,
     )
     print(result)

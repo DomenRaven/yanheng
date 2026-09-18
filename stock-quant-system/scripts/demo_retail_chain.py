@@ -74,6 +74,8 @@ def main() -> None:
         conn.close()
         assert enriched[0].get("size_shares", 0) >= 100, enriched[0]
         assert enriched[0].get("exec_date") == exec_d.isoformat()
+        assert enriched[0].get("invalid_if"), enriched[0]
+        assert "排名大幅下降" not in "".join(enriched[0]["invalid_if"])
 
         aid = create_paper_account("live_prep_10k")
         s1 = simulate_advice_cards(aid, enriched, as_of_nav=exec_d)

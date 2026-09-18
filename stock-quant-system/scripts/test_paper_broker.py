@@ -185,12 +185,77 @@ def test_cannot_afford_one_lot_on_10k_high_price() -> None:
         path.unlink(missing_ok=True)
 
 
+def test_missing_open_is_pending_not_rejected() -> None:
+    """R4.a：执行日无开盘价 → pending，不计拒绝。"""
+    path = _with_temp_db()
+    try:
+        from advice.paper_broker import simulate_advice_cards
+
+        aid = create_paper_account("live_prep_10k")
+        future = dt.date(2026, 9, 20)  # 种子库无此日行情
+        cards = [
+            {
+                "advice_id": "adv-pend-1",
+                "symbol": "000001",
+                "action": "open",
+                "size_shares": 100,
+                "exec_date": future.isoformat(),
+            }
+        ]
+        sm = simulate_advice_cards(aid, cards)
+        assert sm.pending == 1 and sm.rejected == 0 and sm.filled == 0, sm
+        assert "开盘价" in (sm.lines[0].message or "")
+        r = execute_paper_order(
+            aid, symbol="000001", side="buy", shares=100, trade_date=future, advice_id="adv-pend-2"
+        )
+        assert r.status == "pending"
+        assert r.reject_reason and "开盘价" in r.reject_reason
+    finally:
+        os.environ.pop("STOCK_QUANT_DB", None)
+        Path(path).unlink(missing_ok=True)
+
+
+def test_todo_sim_fills_when_open_exists() -> None:
+    """R4.b：有开盘价+现金足够 → 至少 1 笔 filled，净值变化。"""
+    path = _with_temp_db()
+    try:
+        from advice.paper_broker import simulate_advice_cards
+
+        aid = create_paper_account("live_prep_10k")
+        d0 = dt.date(2026, 9, 15)
+        cards = [
+            {
+                "advice_id": "adv-fill-1",
+                "symbol": "000001",
+                "action": "open",
+                "size_shares": 100,
+                "exec_date": d0.isoformat(),
+            }
+        ]
+        sm = simulate_advice_cards(aid, cards, as_of_nav=d0)
+        assert sm.filled == 1 and sm.pending == 0, sm
+        with write_session() as conn:
+            pos = conn.execute(
+                "SELECT shares FROM paper_positions WHERE account_id = ? AND symbol = '000001'",
+                [aid],
+            ).fetchone()
+            cash = conn.execute("SELECT cash_cny FROM paper_cash WHERE account_id = ?", [aid]).fetchone()[0]
+        assert pos is not None and float(pos[0]) == 100
+        assert float(cash) < 10_000.0
+        assert sm.reason_counts()  # R4.c 原因可汇总
+    finally:
+        os.environ.pop("STOCK_QUANT_DB", None)
+        Path(path).unlink(missing_ok=True)
+
+
 def main() -> None:
     test_lot_size_and_buy_sell_tplus1()
     test_idempotent_advice_id()
     test_limit_up_rejects_buy()
     test_min_commission_on_small_buy()
     test_cannot_afford_one_lot_on_10k_high_price()
+    test_missing_open_is_pending_not_rejected()
+    test_todo_sim_fills_when_open_exists()
     print("test_paper_broker: all passed")
 
 

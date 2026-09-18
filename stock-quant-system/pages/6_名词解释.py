@@ -22,8 +22,7 @@ for term, definition in glossary.items():
 
 st.divider()
 st.info(
-    "更完整的系统说明（怎么用、每个页面是干什么的、局限性有哪些）见项目根目录 "
-    "`用户使用说明书.docx`；开发/维护相关说明见 `开发者使用说明书.docx`。"
+    "更完整的操作说明见：`docs/manuals/用户使用说明书.html`。"
 )
 
 _conn = connect_warehouse()
