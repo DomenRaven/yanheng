@@ -1,11 +1,9 @@
 """明日待办：从最新建议卡片提炼最多 3 条次日可执行项（Phase 5 阶段 C）。"""
 from __future__ import annotations
 
-import datetime as dt
-
 import streamlit as st
 
-from advice.advice_engine import load_latest_advice_cards
+from advice.advice_engine import load_latest_advice_cards, parse_as_of_date
 from advice.entry_rules import build_tomorrow_todos
 from common.ui_theme import (
     action_meta,
@@ -20,19 +18,37 @@ apply_theme(page_title="明日待办", page_icon="📋")
 st.title("📋 明日待办")
 st.caption(
     "在「持仓与建议」生成卡片后，这里列出下一交易日最多 3 条优先动作。"
-    " 开盘涨停或停牌会自动标记为暂不可执行。"
+    "开盘涨停或停牌会标为暂不可执行。练模拟成交请回「持仓与建议 → ② 本机模拟盘」。"
 )
 
 conn = connect_warehouse()
 try:
     require_warehouse_for_decisions(conn)
-    as_of, cards = load_latest_advice_cards(conn)
+    todo_pool = st.radio(
+        "待办池",
+        ["hs", "bj"],
+        format_func=lambda x: "沪深池" if x == "hs" else "北交所池",
+        horizontal=True,
+        key="todo_pool",
+    )
+    as_of, cards = load_latest_advice_cards(conn, pool_id=todo_pool)
     if not as_of or not cards:
-        st.info("尚无建议记录。请先在「持仓与建议」页点击「生成/刷新建议卡片」。")
+        st.info(
+            f"「{'沪深' if todo_pool == 'hs' else '北交所'}池」尚无建议记录。"
+            "请先在「持仓与建议」切换同池并点击「生成/刷新建议卡片」。"
+        )
     else:
-        signal_d = dt.date.fromisoformat(as_of) if isinstance(as_of, str) else as_of
-        todos = build_tomorrow_todos(cards, signal_d, conn, max_items=3)
-        st.caption(f"信号日 {as_of} → 待办条数 {len(todos)}")
+        signal_d = parse_as_of_date(as_of)
+        allow_bj = todo_pool == "bj" or bool(
+            st.session_state.get("allow_bj_open_in_todos")
+        )
+        todos = build_tomorrow_todos(
+            cards, signal_d, conn, max_items=3, allow_bj_open=allow_bj
+        )
+        st.caption(
+            f"池：{'沪深' if todo_pool == 'hs' else '北交所'} · "
+            f"信号日 {signal_d.isoformat()} → 待办条数 {len(todos)}"
+        )
         if not todos:
             st.success("当前没有需要次日优先执行的动作（或 open 建议未通过以损定仓）。")
         for item in todos:
@@ -59,7 +75,7 @@ try:
         section_header("说明", level=2)
         st.markdown(
             "- 待办与回测脚本共用同一套入场规则。\n"
-            "- 开仓候选同一行业最多 1 只（适合小资金分散）；止损与减仓不受此条限制。\n"
+            "- 开仓候选同一行业最多 1 只；止损与减仓不受此条限制。\n"
             "- 本页不会自动下单；模拟成交请到「持仓与建议 → 本机模拟盘」操作。"
         )
 finally:

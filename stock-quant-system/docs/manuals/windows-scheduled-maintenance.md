@@ -6,7 +6,7 @@
 
 ```powershell
 cd stock-quant-system\scripts
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install_windows_maintenance_tasks.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_windows_maintenance_tasks.ps1 -IncludeLogonAutoApply
 ```
 
 （若带中文的绝对路径 `-File` 报解析错误，请先 `cd` 到 `scripts` 再执行。）

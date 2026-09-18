@@ -23,7 +23,7 @@ require_warehouse_for_decisions(conn)
 col_cap, col_help1, col_help2 = st.columns([6, 1, 1])
 col_cap.caption(
     "沪深池与北交所池使用**各自冠军模型**分别排序，不再混排。"
-    "北交所冠军已独立训练时可选北交所池查看；观察名单/建议仍默认走沪深池。"
+    "切换上方扫描池时，下方前列候选 / 全量排名 / 坚持度会跟着换到该池缓存。"
 )
 with col_help1:
     term_help("分池扫描")
@@ -50,18 +50,32 @@ else:
 
 top_n = st.slider("显示前 N 名", min_value=10, max_value=200, value=50, step=10)
 
+if "scan_by_pool" not in st.session_state:
+    st.session_state["scan_by_pool"] = {}
+# 兼容旧单键缓存
+legacy = st.session_state.get("scan_result")
+if legacy and isinstance(legacy, tuple):
+    if len(legacy) == 4:
+        st.session_state["scan_by_pool"].setdefault(legacy[3], legacy)
+    else:
+        st.session_state["scan_by_pool"].setdefault("hs", (*legacy, "hs"))
+
 if st.button("🔄 运行最新扫描", type="primary"):
     with st.spinner(f"正在加载 {pool_label} 池冠军并打分..."):
         from advice.scanner import run_scan
 
         try:
-            full_ranked, top_pick, trade_date = run_scan(top_n=top_n, pool_id=pool_label, source="ui")
-            st.session_state["scan_result"] = (full_ranked, top_pick, str(trade_date), pool_label)
+            full_ranked, top_pick, trade_date = run_scan(
+                top_n=top_n, pool_id=pool_label, source="ui"
+            )
+            payload = (full_ranked, top_pick, str(trade_date), pool_label)
+            st.session_state["scan_by_pool"][pool_label] = payload
+            st.session_state["scan_result"] = payload  # 兼容旧逻辑
         except FileNotFoundError as exc:
             st.error(str(exc))
-            st.session_state.pop("scan_result", None)
+            st.session_state["scan_by_pool"].pop(pool_label, None)
 
-cached = st.session_state.get("scan_result")
+cached = st.session_state["scan_by_pool"].get(pool_label)
 _rename = {
     "rank": "排名",
     "symbol": "代码",
@@ -82,11 +96,7 @@ _rename = {
 }
 
 if cached:
-    if len(cached) == 4:
-        full_ranked, top_pick, trade_date, cached_pool = cached
-    else:
-        full_ranked, top_pick, trade_date = cached
-        cached_pool = "hs"
+    full_ranked, top_pick, trade_date, cached_pool = cached
     st.success(
         f"池：{'沪深' if cached_pool == 'hs' else '北交所'} · 快照交易日：{trade_date}，"
         f"候选：{len(full_ranked)} 只，其中可交易：{int(full_ranked['is_tradable'].sum())} 只"
@@ -103,7 +113,7 @@ if cached:
         ]
         st.info(
             "模型前三名：" + " · ".join(names)
-            + " —— 可到「持仓与建议」使用「一键练习（生成并模拟成交）」。"
+            + " —— 可到「持仓与建议」切换同池后使用「一键练习」。"
         )
 
     tab1, tab2, tab3 = st.tabs(["前列候选（含行为冲突提示）", "全量排名", "榜单 / 坚持度"])
@@ -128,29 +138,33 @@ if cached:
             hide_index=True,
         )
         st.caption(
-            "「模型打分」仅用于本池相对排序，本身没有单位，也不表示预期收益率。"
-            "冲突提示不改排名。开仓待办另有「同一行业最多 1 只」规则。"
+            "「模型打分」仅用于本池相对排序。切换上方扫描池会切换本表与坚持度（各池缓存独立）。"
         )
     with tab2:
-        st.dataframe(full_ranked.rename(columns=_rename), use_container_width=True, hide_index=True, height=600)
+        st.dataframe(
+            full_ranked.rename(columns=_rename),
+            use_container_width=True,
+            hide_index=True,
+            height=600,
+        )
     with tab3:
         from advice.scan_archive import persistence_full_attendance, persistence_hit_counts
 
-        st.caption("坚持度按**当前池**存档统计，**不是荐股、不是胜率**。")
-        full5 = persistence_full_attendance(conn, pool_id=cached_pool, window_runs=5, top_k=50)
+        st.caption("坚持度按**当前所选池**存档统计，**不是荐股、不是胜率**。")
+        full5 = persistence_full_attendance(conn, pool_id=pool_label, window_runs=5, top_k=50)
         st.markdown("#### 近 5 次扫描全勤前 50")
         if full5.empty:
             st.info("本池存档不足 5 次有效扫描，暂无全勤名单。")
         else:
             st.dataframe(full5.rename(columns=_rename), use_container_width=True, hide_index=True)
-        hits20 = persistence_hit_counts(conn, pool_id=cached_pool, lookback_runs=20, top_k=50)
+        hits20 = persistence_hit_counts(conn, pool_id=pool_label, lookback_runs=20, top_k=50)
         st.markdown("#### 近 20 次扫描前 50 命中次数")
         if hits20.empty:
             st.info("本池尚无扫描存档。")
         else:
             st.dataframe(hits20.head(50).rename(columns=_rename), use_container_width=True, hide_index=True)
 else:
-    st.info("请选择池并点击上方按钮运行扫描。")
+    st.info(f"当前「{'沪深' if pool_label == 'hs' else '北交所'}池」尚无缓存结果，请点击上方运行扫描。")
     from advice.scan_archive import persistence_hit_counts
 
     bj_ready = Path("mlops/registry/champion_bj.json").exists()
@@ -159,8 +173,6 @@ else:
             "北交所池冠军尚未晋升（缺少 champion_bj.json）。"
             "不会用沪深模型代打。请运行：python -m mlops.retrain_schedule --pool bj"
         )
-    elif pool_label == "bj" and bj_ready:
-        st.caption("北交所池冠军已就绪，可点击上方运行扫描。")
     hits20 = persistence_hit_counts(conn, pool_id=pool_label, lookback_runs=20, top_k=50)
     st.markdown("### 历史坚持度（本池）")
     if hits20.empty:

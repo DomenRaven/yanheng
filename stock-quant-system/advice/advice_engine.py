@@ -44,6 +44,29 @@ _SINGLE_NAME_LIMIT = 0.15  # 单票占净值上限，超过触发"减仓"风控�
 _OPEN_CANDIDATE_RANK_THRESHOLD = 50  # 排名进入前50才考虑"建仓"级别的建议，其余只是"观察"
 
 
+def parse_as_of_date(as_of) -> dt.date:
+    """把 advice_log / UI 里各种 as_of 表示收成 date。
+
+    DuckDB/pandas 偶发会变成 ``2026-09-17 00: 00: 00``（冒号后多空格），
+    ``date.fromisoformat`` 会炸；统一先取 ``YYYY-MM-DD`` 前缀。
+    """
+    if as_of is None or (isinstance(as_of, float) and pd.isna(as_of)):
+        raise ValueError("as_of 为空")
+    if isinstance(as_of, dt.datetime):
+        return as_of.date()
+    if isinstance(as_of, dt.date):
+        return as_of
+    if hasattr(as_of, "date") and not isinstance(as_of, str):
+        try:
+            return as_of.date()  # type: ignore[no-any-return]
+        except Exception:
+            pass
+    s = str(as_of).strip().replace("T", " ")
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return dt.date.fromisoformat(s[:10])
+    return pd.Timestamp(s).date()
+
+
 def _reasons_from_factors(row: pd.Series) -> list[dict]:
     """S1：因子 + 行为冲突同一条 reasons 链；行为项不改排名。"""
     return build_reason_pack(row)["reasons"]
@@ -518,14 +541,24 @@ def build_priority_digest(position_cards: list[dict], watchlist_cards: list[dict
     return result
 
 
-def persist_advice_cards(conn, cards: list[dict], as_of_date: str, model_run_id: str | None = None) -> None:
-    """同一交易日的建议是一份快照：先删掉该日全部旧行，再写入本次结果。
+def persist_advice_cards(
+    conn,
+    cards: list[dict],
+    as_of_date: str,
+    model_run_id: str | None = None,
+    *,
+    pool_id: str = "hs",
+) -> None:
+    """同一交易日 + 同一池的建议是一份快照：先删该日该池旧行，再写入。
 
-    只按 (symbol, as_of) upsert 不够——平仓后的股票不会出现在新卡片里，旧的止损/减仓
-    行会留在库里，首页「今日决策速览」就会只叠加、不消失（2026-08-26 第二轮人工测试复现）。
+    分池后 hs/bj 可同日并存；只按 (symbol, as_of) upsert 会互相覆盖。
     """
-    as_of = pd.Timestamp(as_of_date).date()
-    conn.execute("DELETE FROM advice_log WHERE as_of = ?", [as_of])
+    as_of = parse_as_of_date(as_of_date)
+    pool_id = pool_id or "hs"
+    conn.execute(
+        "DELETE FROM advice_log WHERE as_of = ? AND coalesce(pool_id, 'hs') = ?",
+        [as_of, pool_id],
+    )
     if not cards:
         return
     from common.tushare_client import upsert
@@ -546,6 +579,7 @@ def persist_advice_cards(conn, cards: list[dict], as_of_date: str, model_run_id:
             "invalid_if_json": json.dumps(c.get("invalid_if", []), ensure_ascii=False),
             "reason_one_liner": c.get("reason_one_liner"),
             "model_run_id": model_run_id,
+            "pool_id": pool_id,
             "size_shares": c.get("size_shares"),
             "est_amount_cny": c.get("est_amount_cny"),
             "size_pct_nav": (
@@ -560,18 +594,32 @@ def persist_advice_cards(conn, cards: list[dict], as_of_date: str, model_run_id:
             ),
         })
     df = pd.DataFrame(rows)
-    upsert(conn, "advice_log", ["symbol", "as_of"], df)
+    upsert(conn, "advice_log", ["advice_id"], df)
 
 
-def load_latest_advice_cards(conn) -> tuple[str | None, list[dict]]:
-    """从`advice_log`读回最近一次生成的建议卡片（跨Streamlit会话持久化），
-    供首页「今日决策速览」使用——不需要每次打开首页都重新跑一次全市场扫描。
-    返回 (as_of日期字符串或None, 卡片列表)。"""
-    latest = conn.execute("SELECT MAX(as_of) AS d FROM advice_log").df()
+def load_latest_advice_cards(
+    conn, *, pool_id: str = "hs"
+) -> tuple[str | None, list[dict]]:
+    """从`advice_log`读回指定池最近一次建议卡片。返回 (as_of YYYY-MM-DD 或 None, 卡片列表)。"""
+    pool_id = pool_id or "hs"
+    latest = conn.execute(
+        """
+        SELECT MAX(as_of) AS d FROM advice_log
+        WHERE coalesce(pool_id, 'hs') = ?
+        """,
+        [pool_id],
+    ).df()
     if latest.empty or pd.isna(latest["d"].iloc[0]):
         return None, []
-    as_of = str(latest["d"].iloc[0])
-    df = conn.execute("SELECT * FROM advice_log WHERE as_of = ? ORDER BY created_at DESC", [as_of]).df()
+    as_of = parse_as_of_date(latest["d"].iloc[0]).isoformat()
+    df = conn.execute(
+        """
+        SELECT * FROM advice_log
+        WHERE as_of = ? AND coalesce(pool_id, 'hs') = ?
+        ORDER BY created_at DESC
+        """,
+        [parse_as_of_date(as_of), pool_id],
+    ).df()
     cards = []
     for _, r in df.iterrows():
         try:
@@ -597,6 +645,7 @@ def load_latest_advice_cards(conn) -> tuple[str | None, list[dict]]:
             "max_loss_cny": r.get("max_loss_cny"),
             "horizon_days": r.get("horizon_days"),
             "exec_date": str(r["exec_date"]) if pd.notna(r.get("exec_date")) else None,
+            "pool_id": pool_id,
         })
     return as_of, cards
 
@@ -605,19 +654,26 @@ def generate_daily_advice(
     top_n_watchlist: int = 30,
     *,
     allow_bj_open: bool | None = None,
+    pool_id: str = "hs",
 ) -> dict:
-    """一站式入口：跑一次掘金扫描 + 读当前持仓 + 生成全部建议卡片 + 落库留痕。
-    供 `pages/` Streamlit页面和 `scripts/daily_pipeline.py` 复用，不重复实现。
-
-    allow_bj_open：None 时读 config；UI 会话可传入覆盖。
-    """
+    """一站式入口：按池扫描 + 持仓建议 + 落库。pool_id=hs|bj。"""
+    from advice.champion_registry import load_champion_pointer
     from advice.entry_rules import build_tomorrow_todos
     from advice.scanner import run_scan
     from common.db import get_connection, init_schema
     from risk.portfolio_optimizer import suggest_rebalance
     from risk.portfolio_risk import compute_concentration, compute_position_summary
 
-    scan_full, scan_top, trade_date = run_scan(top_n=top_n_watchlist, pool_id="hs", source="advice")
+    pool_id = pool_id or "hs"
+    if pool_id not in ("hs", "bj"):
+        raise ValueError(f"未知 pool_id={pool_id}")
+    # 北交所池生成时默认允许该池 open 进待办；沪深池仍受会话/配置约束
+    if allow_bj_open is None and pool_id == "bj":
+        allow_bj_open = True
+
+    scan_full, scan_top, trade_date = run_scan(
+        top_n=top_n_watchlist, pool_id=pool_id, source="advice"
+    )
     conn = get_connection()
     init_schema(conn)
     position_cards: list[dict] = []
@@ -625,26 +681,48 @@ def generate_daily_advice(
     tomorrow_todos: list[dict] = []
     try:
         position_summary = compute_position_summary(conn, str(trade_date))
+        # 持仓建议只保留「属于本池」的标的，避免沪深/北交所卡片混在同一视图
+        if not position_summary.empty:
+            syms = position_summary["symbol"].astype(str).tolist()
+            placeholders = ",".join(["?"] * len(syms))
+            uni = conn.execute(
+                f"SELECT symbol, exchange FROM universe WHERE symbol IN ({placeholders})",
+                syms,
+            ).df()
+            if not uni.empty:
+                if pool_id == "hs":
+                    ok = set(uni.loc[uni["exchange"].isin(["sh", "sz"]), "symbol"].astype(str))
+                else:
+                    ok = set(uni.loc[uni["exchange"] == "bj", "symbol"].astype(str))
+                position_summary = position_summary[
+                    position_summary["symbol"].astype(str).isin(ok)
+                ].copy()
         concentration = compute_concentration(position_summary)
         held_symbols = set(position_summary["symbol"]) if not position_summary.empty else set()
 
-        watchlist_cards = build_advice_for_watchlist(scan_top[~scan_top["symbol"].isin(held_symbols)])
+        watchlist_cards = build_advice_for_watchlist(
+            scan_top[~scan_top["symbol"].isin(held_symbols)]
+        )
         position_cards = build_advice_for_positions(position_summary, scan_full, concentration)
 
         if held_symbols:
             try:
                 candidate_symbols = list(held_symbols | set(scan_top["symbol"]))
                 pred_scores = dict(zip(scan_full["symbol"], scan_full["pred_score"]))
-                rebalance_df = suggest_rebalance(conn, concentration, candidate_symbols, pred_scores, str(trade_date))
+                rebalance_df = suggest_rebalance(
+                    conn, concentration, candidate_symbols, pred_scores, str(trade_date)
+                )
                 position_cards = apply_rebalance_overlay(position_cards, rebalance_df)
             except Exception:
                 logger.exception("组合优化再平衡建议计算失败，跳过该覆盖层，不影响其余建议卡片")
 
         all_cards = position_cards + watchlist_cards
+        for c in all_cards:
+            c["pool_id"] = pool_id
         exchange_map = {}
         if not scan_full.empty and "exchange" in scan_full.columns:
             exchange_map = scan_full.set_index("symbol")["exchange"].to_dict()
-        signal_d = pd.Timestamp(trade_date).date()
+        signal_d = parse_as_of_date(trade_date)
         all_cards = enrich_cards_with_sizing(
             conn,
             all_cards,
@@ -661,26 +739,28 @@ def generate_daily_advice(
 
         model_run_id = None
         try:
-            with open("mlops/registry/champion_hs.json", encoding="utf-8") as f:
-                model_run_id = json.load(f)["run_id"]
+            model_run_id = load_champion_pointer("mlops/registry", pool_id)["run_id"]
         except FileNotFoundError:
-            try:
-                with open("mlops/registry/champion.json", encoding="utf-8") as f:
-                    model_run_id = json.load(f)["run_id"]
-            except FileNotFoundError:
-                pass
-        persist_advice_cards(conn, all_cards, str(trade_date), model_run_id)
+            pass
+        persist_advice_cards(
+            conn, all_cards, str(trade_date), model_run_id, pool_id=pool_id
+        )
     finally:
         conn.close()
 
-    logger.info("生成建议卡片：持仓相关%d条，观察名单%d条，交易日=%s",
-                len(position_cards), len(watchlist_cards), trade_date)
+    logger.info(
+        "生成建议卡片 pool=%s：持仓相关%d条，观察名单%d条，交易日=%s",
+        pool_id,
+        len(position_cards),
+        len(watchlist_cards),
+        trade_date,
+    )
     return {
-        "as_of": str(trade_date),
+        "as_of": parse_as_of_date(trade_date).isoformat(),
         "position_cards": position_cards,
         "watchlist_cards": watchlist_cards,
         "tomorrow_todos": tomorrow_todos,
-        "pool_id": "hs",
+        "pool_id": pool_id,
     }
 
 
@@ -690,6 +770,7 @@ def run_practice_cycle(
     top_n_watchlist: int = 30,
     simulate_scope: str = "todos",
     allow_bj_open: bool | None = None,
+    pool_id: str = "hs",
 ) -> dict:
     """扫描 → 建议（含股数）→ 纸面批量模拟。供 UI 一键练习，不自动下单。
 
@@ -699,7 +780,11 @@ def run_practice_cycle(
     """
     from advice.paper_broker import simulate_advice_cards
 
-    advice = generate_daily_advice(top_n_watchlist=top_n_watchlist, allow_bj_open=allow_bj_open)
+    advice = generate_daily_advice(
+        top_n_watchlist=top_n_watchlist,
+        allow_bj_open=allow_bj_open,
+        pool_id=pool_id,
+    )
     if simulate_scope == "all":
         cards = advice["position_cards"] + advice["watchlist_cards"]
     else:

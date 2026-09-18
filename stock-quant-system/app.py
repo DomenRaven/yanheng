@@ -79,21 +79,29 @@ try:
     st.divider()
 
     st.subheader("🎯 今日决策速览")
+    digest_pool = st.radio(
+        "速览池",
+        ["hs", "bj"],
+        format_func=lambda x: "沪深池" if x == "hs" else "北交所池",
+        horizontal=True,
+        key="home_digest_pool",
+    )
     st.caption(
-        "按紧急程度排序：止损、减仓优先。本页每次打开都会重新读库；"
-        "已平仓的股票不再显示持仓类建议。无持仓时，这里只展示观察名单候选。"
+        "按紧急程度排序：止损、减仓优先。切换池只显示该池已生成的建议快照。"
+        "本页只读摘要；要生成建议或练模拟，请到左侧「持仓与建议」。"
     )
     from common.warehouse_readiness import assess_warehouse_readiness
 
     wh_ok = assess_warehouse_readiness(conn).ready
-    as_of, latest_cards = load_latest_advice_cards(conn)
+    as_of, latest_cards = load_latest_advice_cards(conn, pool_id=digest_pool)
     held_symbols = set(concentration["symbol"].tolist()) if not concentration.empty else set()
     latest_cards = cards_for_digest(latest_cards, held_symbols)
     if not wh_ok:
         st.warning("数据未达可用门槛，今日决策速览暂不展示（请先按页顶说明完成数据更新）。")
     elif not latest_cards:
         st.info(
-            "还没有可展示的今日决策。请前往左侧「持仓与建议」录入持仓，并点击「生成/刷新建议卡片」。"
+            f"「{'沪深' if digest_pool == 'hs' else '北交所'}池」还没有可展示的今日决策。"
+            "请前往「持仓与建议」切换同池并点击「生成/刷新建议卡片」。"
         )
     else:
         digest = build_priority_digest(latest_cards, [], top_n=6)
@@ -102,7 +110,10 @@ try:
             st.warning(f"有 {len(urgent)} 条需要重点关注的提示（止损、减仓、止盈或再平衡），建议今日优先处理。")
         elif n_positions == 0:
             st.info("当前没有持仓。下列为观察名单（模型排序靠前、尚未持有），供您自行研究。")
-        st.caption(f"数据对应交易日：{as_of}（在「持仓与建议」页再次生成，可整份替换当天快照）")
+        st.caption(
+            f"池：{'沪深' if digest_pool == 'hs' else '北交所'} · 数据对应交易日：{as_of}"
+            "（在「持仓与建议」页再次生成，可整份替换当天该池快照）"
+        )
         for card in digest:
             render_advice_card(card)
 
@@ -144,8 +155,7 @@ finally:
 
 st.divider()
 st.markdown(
-    "**页面导航**：「持仓与建议」录入、生成建议、模拟盘 · 「明日待办」次日最多 3 条 · "
-    "「掘金扫描」全市场排序 · 「行情图表」K 线与成本线 · 「风险仪表盘」 · "
-    "「AI 解释」（需自行配置密钥） · 「历史建议复盘」 · 「名词解释」。\n\n"
+    "**页面导航**：「持仓与建议」①生成建议 ②模拟盘练习 · 「明日待办」次日最多 3 条 · "
+    "「掘金扫描」分池排序 · 「历史建议复盘」事后对照 · 「风险 / 行情 / AI / 名词」。\n\n"
     "生成建议前，请确认左侧「数据状态」为可用。"
 )

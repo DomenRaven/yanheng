@@ -202,10 +202,16 @@ def _heading(title: str, level: int) -> None:
         st.markdown(f"#### {title}")
 
 
-def render_advice_card(card: dict) -> None:
-    """统一的建议卡片渲染：大字号动作标签 + 颜色分区 + 价格信息突出显示，
-    取代原来纯文字expander的展示方式，降低非专业用户的理解门槛。"""
+def render_advice_card(card: dict, *, details: str = "expander") -> None:
+    """统一的建议卡片渲染。
+
+    details:
+      - ``expander``：顶层卡片可用（勿再包进外层 expander，否则会触发 React removeChild）
+      - ``toggle``：嵌套场景用 checkbox，避免 expander 套 expander
+      - ``none``：只显示摘要，不展开明细
+    """
     meta = action_meta(card["action"])
+    aid = str(card.get("advice_id") or card.get("symbol") or id(card))
     with st.container(border=True):
         head_col, conf_col = st.columns([4, 1])
         with head_col:
@@ -230,7 +236,8 @@ def render_advice_card(card: dict) -> None:
                 p4.metric("参考止盈价", f"¥{price_levels['take_profit_price']:.2f}")
 
         if card.get("plain_summary"):
-            st.markdown(f"<div class='yh-plain-summary'>💡 {card['plain_summary']}</div>", unsafe_allow_html=True)
+            # 避免复杂 HTML 与大量卡片叠加重绘；用原生 markdown
+            st.info(f"💡 {card['plain_summary']}")
         if card.get("reason_one_liner"):
             st.caption(card["reason_one_liner"])
 
@@ -247,18 +254,31 @@ def render_advice_card(card: dict) -> None:
             if card.get("max_loss_cny") is not None and float(card["max_loss_cny"]) > 0:
                 s4.metric("参考最大亏损", f"¥{float(card['max_loss_cny']):,.0f}")
         if card.get("exec_date"):
-            st.caption(f"建议执行日（下一交易日）：{card['exec_date']}；持有参考周期 {card.get('horizon_days') or '—'} 个交易日")
+            st.caption(
+                f"建议执行日（下一交易日）：{card['exec_date']}；"
+                f"持有参考周期 {card.get('horizon_days') or '—'} 个交易日"
+            )
 
-        with st.expander("查看详细理由 / 风险提示 / 失效条件"):
+        def _render_details() -> None:
             st.markdown("**理由**：")
-            for r in card["reasons"]:
-                st.write(f"- [{r['type']}] {r['detail']}")
-            if card["risks"]:
+            for r in card.get("reasons") or []:
+                st.write(f"- [{r.get('type')}] {r.get('detail')}")
+            risks = card.get("risks") or []
+            if risks:
                 st.markdown("**⚠️ 风险提示**：")
-                for r in card["risks"]:
+                for r in risks:
                     st.write(f"- {r}")
-            st.markdown("**该建议在什么情况下会失效**：" + "；".join(card["invalid_if"]))
-            st.caption(card["disclaimer"])
+            inv = card.get("invalid_if") or []
+            if inv:
+                st.markdown("**该建议在什么情况下会失效**：" + "；".join(inv))
+            st.caption(card.get("disclaimer") or "仅供研究辅助，不构成投资建议")
+
+        if details == "expander":
+            with st.expander("查看详细理由 / 风险提示 / 失效条件", key=f"card_exp_{aid}"):
+                _render_details()
+        elif details == "toggle":
+            if st.checkbox("查看详细理由 / 风险 / 失效条件", key=f"card_tog_{aid}"):
+                _render_details()
 
 
 def warehouse_data_end_date(conn) -> str | None:

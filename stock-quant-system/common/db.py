@@ -588,6 +588,7 @@ _MIGRATIONS_SQL = [
     "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS horizon_days INTEGER",
     "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS exec_date DATE",
     "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS reason_one_liner VARCHAR",
+    "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS pool_id VARCHAR DEFAULT 'hs'",
     "ALTER TABLE prediction_log ADD COLUMN IF NOT EXISTS pool_id VARCHAR DEFAULT 'all'",
 ]
 
