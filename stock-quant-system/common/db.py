@@ -451,7 +451,37 @@ CREATE TABLE IF NOT EXISTS paper_account (
     initial_cash  DOUBLE NOT NULL,
     created_at    TIMESTAMP DEFAULT current_timestamp,
     note          VARCHAR,
+    kind          VARCHAR DEFAULT 'human',  -- human | shadow
+    strategy_id   VARCHAR,                  -- 影子仓策略编号；人手练习为空
+    cohort_id     VARCHAR,                  -- 影子仓周队列，如 2026-W38；人手为空
     PRIMARY KEY (account_id)
+);
+
+-- 机器影子仓日净值（按账户记账；多周队列并存）
+CREATE TABLE IF NOT EXISTS shadow_nav_daily (
+    account_id        VARCHAR NOT NULL,
+    cohort_id         VARCHAR,
+    strategy_id       VARCHAR NOT NULL,
+    as_of             DATE NOT NULL,
+    cash_cny          DOUBLE NOT NULL,
+    market_value_cny  DOUBLE NOT NULL,
+    nav_cny           DOUBLE NOT NULL,
+    filled            INTEGER DEFAULT 0,
+    pending           INTEGER DEFAULT 0,
+    rejected          INTEGER DEFAULT 0,
+    skipped           INTEGER DEFAULT 0,
+    PRIMARY KEY (account_id, as_of)
+);
+
+CREATE TABLE IF NOT EXISTS shadow_run_log (
+    run_id        VARCHAR NOT NULL,
+    started_at    TIMESTAMP NOT NULL,
+    finished_at   TIMESTAMP,
+    status        VARCHAR NOT NULL,   -- ok | skipped_data | failed
+    as_of         DATE,
+    message       VARCHAR,
+    report_json   VARCHAR,
+    PRIMARY KEY (run_id)
 );
 
 CREATE TABLE IF NOT EXISTS paper_cash (
@@ -590,7 +620,68 @@ _MIGRATIONS_SQL = [
     "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS reason_one_liner VARCHAR",
     "ALTER TABLE advice_log ADD COLUMN IF NOT EXISTS pool_id VARCHAR DEFAULT 'hs'",
     "ALTER TABLE prediction_log ADD COLUMN IF NOT EXISTS pool_id VARCHAR DEFAULT 'all'",
+    "ALTER TABLE paper_account ADD COLUMN IF NOT EXISTS kind VARCHAR DEFAULT 'human'",
+    "ALTER TABLE paper_account ADD COLUMN IF NOT EXISTS strategy_id VARCHAR",
+    "ALTER TABLE paper_account ADD COLUMN IF NOT EXISTS cohort_id VARCHAR",
 ]
+
+
+def _migrate_shadow_nav_account_pk(conn: duckdb.DuckDBPyConnection) -> None:
+    """旧表主键 (strategy_id, as_of) → (account_id, as_of)，以支持每周新建队列。"""
+    try:
+        cols = {
+            str(r[0])
+            for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'shadow_nav_daily'"
+            ).fetchall()
+        }
+    except Exception:
+        return
+    if not cols:
+        return
+    if "account_id" in cols:
+        return
+    conn.execute(
+        """
+        CREATE TABLE shadow_nav_daily_v2 (
+            account_id        VARCHAR NOT NULL,
+            cohort_id         VARCHAR,
+            strategy_id       VARCHAR NOT NULL,
+            as_of             DATE NOT NULL,
+            cash_cny          DOUBLE NOT NULL,
+            market_value_cny  DOUBLE NOT NULL,
+            nav_cny           DOUBLE NOT NULL,
+            filled            INTEGER DEFAULT 0,
+            pending           INTEGER DEFAULT 0,
+            rejected          INTEGER DEFAULT 0,
+            skipped           INTEGER DEFAULT 0,
+            PRIMARY KEY (account_id, as_of)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO shadow_nav_daily_v2
+          (account_id, cohort_id, strategy_id, as_of, cash_cny, market_value_cny,
+           nav_cny, filled, pending, rejected, skipped)
+        SELECT
+          'shadow-' || strategy_id,
+          'legacy',
+          strategy_id,
+          as_of,
+          cash_cny,
+          market_value_cny,
+          nav_cny,
+          filled,
+          pending,
+          rejected,
+          skipped
+        FROM shadow_nav_daily
+        """
+    )
+    conn.execute("DROP TABLE shadow_nav_daily")
+    conn.execute("ALTER TABLE shadow_nav_daily_v2 RENAME TO shadow_nav_daily")
 
 
 def init_schema(conn: duckdb.DuckDBPyConnection | None = None) -> None:
@@ -603,6 +694,7 @@ def init_schema(conn: duckdb.DuckDBPyConnection | None = None) -> None:
         conn.execute(_SCHEMA_SQL)
         for stmt in _MIGRATIONS_SQL:
             conn.execute(stmt)
+        _migrate_shadow_nav_account_pk(conn)
     finally:
         if own_conn:
             conn.close()

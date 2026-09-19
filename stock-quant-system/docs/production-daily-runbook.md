@@ -45,8 +45,12 @@ $py = ".venv\Scripts\python.exe"
 # 推荐：工作日 = 持仓/待办量价 + 全市场涨跌停/市值截面
 & $py -m scripts.run_daily_refresh --profile weekday_decision
 
-# 周末：全市场行情 + 财务/行为 + 复权；之后可双池重训 / 双池掘金
+# 周末：全市场行情 + 财务/行为 + 复权
 & $py -m scripts.run_daily_refresh --profile weekend_research
+# 无人值守：灌库成功后自动双池建议 + 本周 8 户影子仓换票（StockQuant-WeekendResearch）
+# & $py -m scripts.run_weekend_shadow_chain
+# 日更影子仓盯市（留存期内全户，约 ≤64）：StockQuant-ShadowFarm → run_shadow_farm
+# 可选：双池重训 / 仅掘金存档
 # & $py -m mlops.retrain_schedule --pools
 # & $py -m scripts.run_weekend_dual_scan
 
@@ -88,7 +92,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install_windows_maintenanc
 2. 操作：程序 `E:\...\stock-quant-system\.venv\Scripts\python.exe`  
    参数：`-m scripts.run_daily_refresh --profile weekday_decision`  
    起始于：`...\stock-quant-system`  
-3. 周六任务：`-m scripts.run_daily_refresh --profile weekend_research`  
+3. 周六任务：`-m scripts.run_weekend_shadow_chain`（灌库 → 双池建议 → **新建本周 8 户并换票**；入口见 `invoke_scheduled_weekend_shadow_chain.ps1`）  
+   工作日另有 `StockQuant-ShadowFarm`（03:00）盯市留存期内全部影子账户（≤60 天，粗算同时 ≤64 户）。
 4. 条件：仅 AC 电源可选；**勿**与已手动打开的 Streamlit 写库并行（会只读）。  
 5. 完成后：`check_warehouse_readiness` 或 `check_startup_data` 应为 0。
 

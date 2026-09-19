@@ -156,7 +156,7 @@ if result:
     if result["position_cards"]:
         st.markdown("### 持仓相关建议")
         for card in result["position_cards"]:
-            render_advice_card(card, details="expander")
+            render_advice_card(card, details="toggle")
     else:
         st.info("当前无持仓相关建议（可能尚未录入持仓）。")
 
@@ -337,19 +337,38 @@ if sim:
         f"跳过 {sim['skipped']} · 拒绝 {sim['rejected']} · "
         f"净值 ¥{sim['nav_before']:,.2f} → ¥{sim['nav_after']:,.2f}"
     )
-    if pending and not sim["filled"]:
-        st.info(banner + "\n\n缺执行日开盘价会记「待开盘」。行情补上后再点「③ 仅再模拟待办」。")
-    else:
-        st.success(banner)
+    # 不用 st.success/st.info 在 rerun 后切换类型（易触发 React removeChild）
+    with st.container(border=True):
+        st.markdown(f"**{banner}**")
+        if pending and not sim["filled"]:
+            st.caption("缺执行日开盘价会记「待开盘」。行情补上后再点「③ 仅再模拟待办」。")
+
     reasons = sim.get("reason_counts") or {}
-    if reasons:
-        with st.expander("模拟原因分布 / 明细", expanded=bool(pending or sim["rejected"])):
-            for msg, n in reasons.items():
-                st.write(f"- {msg} × {n}")
-            for ln in sim.get("lines") or []:
-                st.write(
-                    f"`{ln.get('status')}` {ln.get('symbol')} {ln.get('action')} — {ln.get('message') or ''}"
-                )
+    lines = sim.get("lines") or []
+    if reasons or lines:
+        st.caption("模拟原因分布 / 明细")
+        if reasons:
+            st.dataframe(
+                pd.DataFrame([{"原因": k, "次数": v} for k, v in reasons.items()]),
+                use_container_width=True,
+                hide_index=True,
+            )
+        if lines:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "状态": ln.get("status"),
+                            "代码": ln.get("symbol"),
+                            "动作": ln.get("action"),
+                            "说明": ln.get("message") or "",
+                        }
+                        for ln in lines
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 if aid:
     pos_df = list_paper_positions(conn, aid)
@@ -370,7 +389,10 @@ if aid:
     w3.metric("7 日成交额", f"¥{wr['turnover_notional']:,.0f}")
     w4.metric("最大单票权重", f"{wr['max_single_weight']:.1%}")
 
-    with st.expander("高级：手动输入代码模拟一笔（一般不用）"):
+    show_manual = st.checkbox(
+        "高级：手动输入代码模拟一笔（一般不用）", key="paper_show_manual"
+    )
+    if show_manual:
         with st.form("paper_manual_fill"):
             c1, c2, c3, c4 = st.columns(4)
             ps = c1.text_input("代码", value="000001")
@@ -389,16 +411,24 @@ if aid:
                     trade_date=td,
                     advice_id=aid_in.strip() or None,
                 )
-                if r.status == "filled":
-                    st.success(
-                        f"成交 {r.trade_id} 价 {r.price:.2f} 费 {r.fees:.2f} 现金余 {r.cash_after:.2f}"
-                    )
-                elif r.status == "pending":
-                    st.info(r.reject_reason or "待开盘后再练")
-                elif r.status == "skipped":
-                    st.warning(r.reject_reason or "已跳过")
-                else:
-                    st.error(r.reject_reason or "已拒绝")
+                st.session_state["paper_manual_result"] = {
+                    "status": r.status,
+                    "trade_id": r.trade_id,
+                    "price": r.price,
+                    "fees": r.fees,
+                    "cash_after": r.cash_after,
+                    "reject_reason": r.reject_reason,
+                }
                 st.rerun()
+        mr = st.session_state.pop("paper_manual_result", None)
+        if mr:
+            with st.container(border=True):
+                if mr["status"] == "filled":
+                    st.markdown(
+                        f"成交 `{mr['trade_id']}` 价 {mr['price']:.2f} "
+                        f"费 {mr['fees']:.2f} 现金余 {mr['cash_after']:.2f}"
+                    )
+                else:
+                    st.markdown(mr.get("reject_reason") or mr["status"])
 
 close_warehouse(conn)

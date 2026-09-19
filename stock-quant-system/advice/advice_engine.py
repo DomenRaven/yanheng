@@ -334,7 +334,11 @@ def _advice_equity_and_cash(conn) -> tuple[float, float]:
     from advice.paper_broker import mark_to_market_nav
 
     row = conn.execute(
-        "SELECT account_id FROM paper_account ORDER BY created_at DESC LIMIT 1"
+        """
+        SELECT account_id FROM paper_account
+        WHERE coalesce(kind, 'human') = 'human'
+        ORDER BY created_at DESC LIMIT 1
+        """
     ).fetchone()
     if row:
         nav = mark_to_market_nav(conn, row[0], dt.date.today())

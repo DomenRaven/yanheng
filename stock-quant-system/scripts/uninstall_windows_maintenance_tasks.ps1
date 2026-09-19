@@ -6,7 +6,8 @@ $names = @(
     "StockQuant-WeekdayDecision",
     "StockQuant-MidnightCatchup",
     "StockQuant-WeekendResearch",
-    "StockQuant-StartupDataMaintenance"
+    "StockQuant-StartupDataMaintenance",
+    "StockQuant-ShadowFarm"
 )
 
 foreach ($n in $names) {

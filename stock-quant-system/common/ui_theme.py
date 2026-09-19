@@ -216,9 +216,7 @@ def render_advice_card(card: dict, *, details: str = "expander") -> None:
         head_col, conf_col = st.columns([4, 1])
         with head_col:
             st.markdown(
-                f"<div class='yh-action-chip' style='background:{meta['bg']};color:{meta['color']};'>"
-                f"{meta['emoji']} {card['symbol']} {card.get('name') or ''} —— {meta['label']}</div>",
-                unsafe_allow_html=True,
+                f"**{meta['emoji']} {card['symbol']} {card.get('name') or ''} —— {meta['label']}**"
             )
         with conf_col:
             st.metric("置信度", f"{card['confidence']:.0%}")

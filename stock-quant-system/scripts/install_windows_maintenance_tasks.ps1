@@ -2,19 +2,28 @@ param(
     [switch] $IncludeLogonAutoApply,
     [string] $WeekdayTime = "16:15",
     [string] $MidnightTime = "00:30",
-    [string] $WeekendTime = "09:00"
+    [string] $WeekendTime = "09:00",
+    [string] $ShadowFarmTime = "03:00"
 )
 # Register StockQuant maintenance tasks for current Windows user.
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_windows_maintenance_tasks.ps1
-# Optional: -IncludeLogonAutoApply
+# Optional: -IncludeLogonAutoApply ; -ShadowFarmTime "03:00"
 
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Runner = Join-Path $PSScriptRoot "invoke_scheduled_refresh.ps1"
 $Startup = Join-Path $PSScriptRoot "invoke_startup_data_maintenance.ps1"
+$ShadowRunner = Join-Path $PSScriptRoot "invoke_scheduled_shadow_farm.ps1"
+$WeekendChainRunner = Join-Path $PSScriptRoot "invoke_scheduled_weekend_shadow_chain.ps1"
 
 if (-not (Test-Path $Runner)) {
     Write-Error "Missing runner: $Runner"
+}
+if (-not (Test-Path $ShadowRunner)) {
+    Write-Error "Missing shadow farm runner: $ShadowRunner"
+}
+if (-not (Test-Path $WeekendChainRunner)) {
+    Write-Error "Missing weekend shadow chain runner: $WeekendChainRunner"
 }
 
 Import-Module ScheduledTasks -ErrorAction Stop
@@ -24,18 +33,20 @@ function New-StockQuantTask {
         [string] $TaskName,
         [string] $Description,
         $Trigger,
-        [string] $Argument
+        [string] $Argument,
+        [string] $ScriptPath = $Runner,
+        [int] $TimeoutHours = 6
     )
     $action = New-ScheduledTaskAction `
         -Execute "powershell.exe" `
-        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Runner`" $Argument" `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" $Argument" `
         -WorkingDirectory $Root
     $settings = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries `
         -StartWhenAvailable `
         -MultipleInstances IgnoreNew `
-        -ExecutionTimeLimit (New-TimeSpan -Hours 6)
+        -ExecutionTimeLimit (New-TimeSpan -Hours $TimeoutHours)
     Register-ScheduledTask `
         -TaskName $TaskName `
         -Action $action `
@@ -66,9 +77,19 @@ New-StockQuantTask `
 $weTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Saturday -At $WeekendTime
 New-StockQuantTask `
     -TaskName "StockQuant-WeekendResearch" `
-    -Description "YanHeng weekend_research" `
+    -Description "YanHeng weekend_research → dual-pool advice → shadow farm" `
     -Trigger $weTrigger `
-    -Argument "-Profile weekend_research"
+    -Argument "" `
+    -ScriptPath $WeekendChainRunner `
+    -TimeoutHours 14
+
+$sfTrigger = New-ScheduledTaskTrigger -Daily -At $ShadowFarmTime
+New-StockQuantTask `
+    -TaskName "StockQuant-ShadowFarm" `
+    -Description "YanHeng daily shadow farm MTM (uses latest advice; no model promotion)" `
+    -Trigger $sfTrigger `
+    -Argument "" `
+    -ScriptPath $ShadowRunner
 
 if ($IncludeLogonAutoApply) {
     if (-not (Test-Path $Startup)) {

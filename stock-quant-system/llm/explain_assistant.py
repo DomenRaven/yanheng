@@ -176,6 +176,44 @@ def build_context_text(
     return "\n".join(lines)
 
 
+def build_shadow_farm_context(report: dict, *, as_of: str | None = None) -> str:
+    """把影子仓农场汇总拼成给 LLM 的上下文。只翻译已有数字，禁止让模型下单。"""
+    today = as_of or dt.date.today().isoformat()
+    lines = [
+        f"系统日历日期（今天）：{today}",
+        "任务：解读「机器影子仓农场」体检汇总（多策略纸面净值对比）。",
+        "硬性约束：不得给出买入/卖出/加仓/减仓指令；不得据此声称应晋升或替换冠军模型；"
+        "只能比较各策略短窗表现差异、数据缺口与需人工核对的点。",
+        f"跑批状态：{report.get('status')}",
+        f"净值行情日 as_of：{report.get('as_of')}",
+        f"本周队列 cohort_id：{report.get('cohort_id')}",
+        f"留存天数：{report.get('retention_days')}",
+        f"留存期内账户数/周数：{report.get('active_accounts')} / {report.get('active_cohorts')}",
+        f"跑批说明：{report.get('message') or ''}",
+        f"免责声明原文：{report.get('disclaimer') or ''}",
+        "本周队列各策略摘要：",
+    ]
+    for row in report.get("strategies") or []:
+        hz = row.get("horizons") or {}
+
+        def _fmt(key: str) -> str:
+            v = hz.get(key)
+            return f"{v:.2%}" if isinstance(v, (int, float)) else "缺失"
+
+        lines.append(
+            f"- {row.get('strategy_id')}（{row.get('label')}）"
+            f"cohort={row.get('cohort_id')} 账户={row.get('account_id')} "
+            f"池={row.get('pool_id')} "
+            f"净值={row.get('nav_cny')} 现金={row.get('cash_cny')} 市值={row.get('market_value_cny')} "
+            f"成交={row.get('filled')} 待开盘={row.get('pending')} "
+            f"ret_1d={_fmt('ret_1d')} ret_3d={_fmt('ret_3d')} "
+            f"ret_7d={_fmt('ret_7d')} ret_15d={_fmt('ret_15d')} "
+            f"ret_20d={_fmt('ret_20d')} ret_30d={_fmt('ret_30d')} "
+            f"备注={row.get('note') or ''}"
+        )
+    return "\n".join(lines)
+
+
 def sanitize_explanation(text: str) -> str:
     """去掉模型偶发夹带的 HTML 标签。Streamlit 会把它们变成真实 DOM，
     下一轮 rerun 拆节点时可能触发 React removeChild（本页 2026-08-26 已踩过）。"""

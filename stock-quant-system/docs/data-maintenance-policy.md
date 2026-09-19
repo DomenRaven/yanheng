@@ -103,12 +103,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install_windows_maintenanc
 |------------|----------|---------|
 | `StockQuant-WeekdayDecision` | 周一至五 16:15 | `weekday_decision` |
 | `StockQuant-MidnightCatchup` | 每天 00:30 | `weekday_decision` |
-| `StockQuant-WeekendResearch` | 周六 09:00 | `weekend_research` |
+| `StockQuant-WeekendResearch` | 周六 09:00 | 周末链路：`weekend_research` → 双池建议 → 影子仓 |
+| `StockQuant-ShadowFarm` | 每天 03:00 | 影子仓农场（`run_shadow_farm`；**不灌行情**） |
 
-- 日志：`data/logs/scheduled_<profile>_*.log`（由 `scripts/invoke_scheduled_refresh.ps1` 写入）
+- 日志：`data/logs/scheduled_<profile>_*.log`；周末链路见 `scheduled_weekend_shadow_chain_*.log`；影子仓见 `scheduled_shadow_farm_*.log`
 - 卸载：`powershell -File scripts\uninstall_windows_maintenance_tasks.ps1`
 - 详表：`docs/manuals/windows-scheduled-maintenance.md`
-
+- **影子仓依赖**：日更须先有行情；周末链路在灌库成功后自动生成建议并开本周 8 户换票；工作日 03:00 对留存期内（≥60 天）全部影子账户盯市。短窗盈亏**不**进入 retrain/promotion（见 `docs/shadow-farm-notes.md`）。
 **可选** 登录补灌（未就绪则 `ensure_data_fresh --apply`，与 Streamlit 勿并行写库）：
 
 ```powershell

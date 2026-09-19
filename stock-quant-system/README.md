@@ -31,6 +31,7 @@ LLM解释层已上线Streamlit本地应用，对齐`docs/00-总览/02-产品定�
   一键启动exe打包）：`docs/ux-upgrade-notes.md`
 - 用户手册（**阅读请打开 HTML**）：`docs/manuals/用户使用说明书.html`  
   （源稿 Markdown：`docs/manuals/用户使用说明书.md`；可用 `python -m scripts.build_user_manual_html` 重新生成）
+- 影子仓农场（周队列 8 户、留存 60 天、同时约 ≤64 户；监测 CSV/JSON）：`docs/shadow-farm-notes.md`
 - 开发者手册 / 人工可用性测试指南：`docs/manuals/`
 - 第二轮人工测试清单（Markdown，边测边勾）：`docs/manuals/人工可用性测试指南.md`
 - 本项目的开发工作流与道德约束：`.cursor/rules/quant-dev-loop.mdc`、

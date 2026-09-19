@@ -53,22 +53,46 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
-def create_paper_account(template_id: str, *, note: str | None = None) -> str:
+def create_paper_account(
+    template_id: str,
+    *,
+    note: str | None = None,
+    kind: str = "human",
+    strategy_id: str | None = None,
+    cohort_id: str | None = None,
+) -> str:
     templates = _templates()
     if template_id not in templates:
         raise ValueError(f"未知 paper 模板: {template_id}，可选: {list(templates)}")
+    kind = kind or "human"
+    if kind not in ("human", "shadow"):
+        raise ValueError(f"未知 paper kind={kind}")
     initial = float(templates[template_id]["initial_cash_cny"])
-    account_id = _new_id(template_id)
+    if kind == "human":
+        account_id = _new_id(template_id)
+    elif cohort_id:
+        # 周队列：shadow-2026W38-hs_todos
+        slug = str(cohort_id).replace("-", "")
+        account_id = f"shadow-{slug}-{strategy_id or _new_id('s')}"
+    else:
+        account_id = f"shadow-{strategy_id or _new_id('s')}"
     with write_session(init=True) as conn:
         conn.execute(
-            "INSERT INTO paper_account (account_id, template_id, initial_cash, note) VALUES (?, ?, ?, ?)",
-            [account_id, template_id, initial, note],
+            """
+            INSERT INTO paper_account
+              (account_id, template_id, initial_cash, note, kind, strategy_id, cohort_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [account_id, template_id, initial, note, kind, strategy_id, cohort_id],
         )
         conn.execute(
             "INSERT INTO paper_cash (account_id, cash_cny) VALUES (?, ?)",
             [account_id, initial],
         )
-    logger.info("创建模拟账户 %s 模板=%s 初始现金=%.2f", account_id, template_id, initial)
+    logger.info(
+        "创建模拟账户 %s 模板=%s kind=%s strategy=%s cohort=%s 初始现金=%.2f",
+        account_id, template_id, kind, strategy_id, cohort_id, initial,
+    )
     return account_id
 
 
@@ -177,16 +201,27 @@ def _sellable_shares(conn, account_id: str, symbol: str, trade_date: dt.date) ->
     return max(0.0, held - float(bought_today))
 
 
-def _advice_already_filled(conn, advice_id: str | None) -> bool:
+def _advice_already_filled(conn, advice_id: str | None, account_id: str | None = None) -> bool:
+    """同一账户内同一 advice_id 只成交一次；不同账户可各自模拟。"""
     if not advice_id:
         return False
-    row = conn.execute(
-        """
-        SELECT 1 FROM paper_trades
-        WHERE advice_id = ? AND reject_reason IS NULL LIMIT 1
-        """,
-        [advice_id],
-    ).fetchone()
+    if account_id:
+        row = conn.execute(
+            """
+            SELECT 1 FROM paper_trades
+            WHERE advice_id = ? AND account_id = ? AND reject_reason IS NULL
+            LIMIT 1
+            """,
+            [advice_id, account_id],
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT 1 FROM paper_trades
+            WHERE advice_id = ? AND reject_reason IS NULL LIMIT 1
+            """,
+            [advice_id],
+        ).fetchone()
     return row is not None
 
 
@@ -207,7 +242,7 @@ def execute_paper_order(
         return PaperOrderResult("rejected", None, "股数须为 100 的正整数倍", None, None, None)
 
     with write_session(init=True) as conn:
-        if _advice_already_filled(conn, advice_id):
+        if _advice_already_filled(conn, advice_id, account_id):
             return PaperOrderResult("skipped", None, "advice_id 已成交（幂等）", None, None, get_cash(conn, account_id))
 
         tr = _tradability_row(conn, symbol, trade_date)
@@ -378,22 +413,45 @@ def execute_paper_order(
         return PaperOrderResult("filled", trade_id, None, exec_px, fees, new_cash)
 
 
-def latest_paper_account_id(conn) -> str | None:
+def latest_paper_account_id(conn, *, kind: str = "human") -> str | None:
+    """默认只返回人手练习账户，避免影子仓冒充 UI 当前账户。"""
     row = conn.execute(
-        "SELECT account_id FROM paper_account ORDER BY created_at DESC LIMIT 1"
+        """
+        SELECT account_id FROM paper_account
+        WHERE coalesce(kind, 'human') = ?
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        [kind or "human"],
     ).fetchone()
     return row[0] if row else None
 
 
+def last_quote_date(conn, as_of: dt.date | None = None) -> dt.date | None:
+    """仓库中 <= as_of 的最近有行情交易日（周末/节假日回退）。"""
+    end = as_of or dt.date.today()
+    row = conn.execute(
+        "SELECT MAX(trade_date) FROM daily_quotes WHERE trade_date <= ?",
+        [end],
+    ).fetchone()
+    if not row or row[0] is None:
+        return None
+    d = row[0]
+    return d if isinstance(d, dt.date) else pd.Timestamp(d).date()
+
+
 def mark_to_market_nav(conn, account_id: str, as_of: dt.date) -> dict[str, float]:
-    """现金 + 持仓按 as_of 收盘价市值（缺行情则跳过该标的）。"""
+    """现金 + 持仓按 as_of 当日或之前最近收盘价市值（缺行情则跳过该标的）。"""
     cash = get_cash(conn, account_id)
     adj = _price_adjust()
     pos = list_paper_positions(conn, account_id)
     mv = 0.0
     for _, row in pos.iterrows():
         px_row = conn.execute(
-            "SELECT close FROM daily_quotes WHERE symbol = ? AND trade_date = ? AND adjust = ?",
+            """
+            SELECT close FROM daily_quotes
+            WHERE symbol = ? AND trade_date <= ? AND adjust = ?
+            ORDER BY trade_date DESC LIMIT 1
+            """,
             [row["symbol"], as_of, adj],
         ).fetchone()
         if px_row and px_row[0] is not None:
@@ -473,7 +531,11 @@ def simulate_advice_cards(
                 lines.append(AdviceSimLine(aid, sym, action, "skipped", "无 exec_date"))
                 skipped += 1
                 continue
-            trade_date = dt.date.fromisoformat(exec_s) if isinstance(exec_s, str) else exec_s
+            from advice.advice_engine import parse_as_of_date
+
+            trade_date = (
+                parse_as_of_date(exec_s) if not isinstance(exec_s, dt.date) else exec_s
+            )
             if action == "open":
                 blocked, why = entry_blocked_at_open(read_conn, sym, trade_date)
                 if blocked:
@@ -550,7 +612,11 @@ def paper_weekly_report(conn, account_id: str, *, as_of: dt.date | None = None) 
     if nav["nav_cny"] > 0 and not list_paper_positions(conn, account_id).empty:
         for _, row in list_paper_positions(conn, account_id).iterrows():
             px = conn.execute(
-                "SELECT close FROM daily_quotes WHERE symbol = ? AND trade_date = ? AND adjust = ?",
+                """
+                SELECT close FROM daily_quotes
+                WHERE symbol = ? AND trade_date <= ? AND adjust = ?
+                ORDER BY trade_date DESC LIMIT 1
+                """,
                 [row["symbol"], end, _price_adjust()],
             ).fetchone()
             if px and px[0]:
