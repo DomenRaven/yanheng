@@ -75,9 +75,21 @@ def _run_universe() -> dict:
 
 
 def _run_quotes(limit: int | None) -> dict:
+    """全市场日线。config ingestion.tushare_bulk_quotes.enabled=true 时走 Tushare 按日批量
+    （3 次调用/日，含 bj，自动重定基），失败且 fallback_to_sina 时回退逐股新浪。"""
     from ingestion.quotes_batch import sync_quotes_batch
+    from ingestion.tushare_market_data import bulk_quotes_config, sync_bulk_quotes_by_date
 
-    return sync_quotes_batch(limit=limit)
+    cfg = bulk_quotes_config()
+    if not cfg["enabled"]:
+        return sync_quotes_batch(limit=limit)
+    try:
+        return {"source": "tushare_bulk", **sync_bulk_quotes_by_date(limit=limit)}
+    except Exception as exc:  # noqa: BLE001
+        if not cfg["fallback_to_sina"]:
+            raise
+        logger.exception("tushare 按日批量行情失败，回退逐股新浪: %s", exc)
+        return {"source": "sina_fallback", "bulk_error": f"{type(exc).__name__}: {exc}", **sync_quotes_batch(limit=limit)}
 
 
 def _run_quotes_decision(limit: int | None) -> dict:

@@ -61,6 +61,19 @@ ingestion:
   quotes_daily_skip_exchanges:
     - bj
 
+  # 全市场日线改走 Tushare 按交易日批量（daily + adj_factor + daily_basic，3 次调用/日，含 bj，
+  # 除权票自动重定基历史 qfq）。探针与 ADR：docs/probe-tushare-bulk-quotes-20261012.md。
+  # 2026-10-12 探针门禁（非事件票 99.99% 行偏差 ≤0.1%）通过，但尚未在主库上跑过一次完整周末链，
+  # 默认保持 OFF；首次开启建议手工 `python -m ingestion.tushare_market_data --task bulk_quotes` 观察。
+  tushare_bulk_quotes:
+    enabled: false
+    fallback_to_sina: true        # 批量步异常时回退逐股新浪，不让周末链因此中止
+    coverage_ratio: 0.8           # “有效截面日”口径，与 production_readiness.min_quote_coverage_ratio 一致
+    max_dates_per_run: 60         # 单次最多补多少个交易日（安全阀；超出下次续补）
+    audit_sample_dates: 24        # 抽样审计全库 qfq 基准的采样交易日数（2 次调用/日）
+    audit_rel_tol: 0.001          # 基准失配判定容差（相对），另加半分钱舍入容差
+    max_rebuild_symbols: 800      # 单次最多按票重建多少只失配票（2 次调用/票）
+
   # 日更 / 周更 预设名（scripts/run_daily_refresh --profile）
   maintenance_profiles:
     weekday_decision: "universe,quotes_decision,market_data,tushare_market_data"

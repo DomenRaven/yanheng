@@ -156,6 +156,7 @@ powershell -File .\scripts\install_windows_maintenance_tasks.ps1 -IncludeLogonAu
 | ready 但 warning naive vs effective | 继续跑到 `effective` 对齐最近交易日 |
 | 需要只补 limit/basic | `--only tushare_market_data` 或 `decision_min` |
 | 北交所 qfq 写 0 行 / AI 分停滞在旧月 | 确认走 `tushare_bse_quotes` 或 `tushare_prices`（强制刷 adj）；勿只靠东财 bj |
+| 开机后周末链与工作日补课同时写库、日志却报 ok | 2026-10-10：两边同一时间戳启动，约 50 次 `WarehouseBusyError` 被步骤内部接住，行情/财务各丢约 25 条，步骤仍报成功。同一时刻只允许一个写库任务；写失败必须把步骤标失败。详见 `docs/probe-tushare-bulk-quotes-20261012.md` |
 
 ---
 
@@ -178,6 +179,7 @@ powershell -File .\scripts\install_windows_maintenance_tasks.ps1 -IncludeLogonAu
 | `scripts.check_startup_data` | 启动自检 + 建议命令 |
 | `docs/production-daily-runbook.md` | 日课清单 |
 | `.cursor/skills/stock-quant-data-update/SKILL.md` | Agent 灌库规程 |
+| `docs/probe-tushare-bulk-quotes-20261012.md` | 按日批量行情探针；`ingestion.tushare_bulk_quotes` 默认关闭 |
 
 ---
 
