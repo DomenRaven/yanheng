@@ -160,7 +160,13 @@ def run_scan(
         names = conn.execute("SELECT symbol, name FROM universe").df()
 
         result = snapshot.merge(tradability, on="symbol", how="left").merge(names, on="symbol", how="left")
-        result["is_tradable"] = result["is_tradable"].fillna(True)
+        result["is_tradable"] = result["is_tradable"].fillna(True).astype(bool)
+        # 退市整理期标的：个人买入门槛 50 万元 + 2 年（上交所 4.4.5 / 深交所 4.5.3），
+        # 万元账户不可买，和停牌、一字涨停一样记为不可买入，保留在全量排名里便于复盘。
+        from research.a_share_rules import is_delisting_period
+
+        delisting = result["name"].map(is_delisting_period).fillna(False).astype(bool)
+        result.loc[delisting, "is_tradable"] = False
         result["rank"] = result["pred_score"].rank(ascending=False, method="first").astype(int)
         result = result.sort_values("rank")
 

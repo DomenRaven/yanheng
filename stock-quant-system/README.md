@@ -15,6 +15,7 @@ LLM解释层已上线Streamlit本地应用，对齐`docs/00-总览/02-产品定�
 的需求规格见 `docs/9.16-散户决策链需求规格.md`，验收见 `docs/phase5-acceptance-report.md`，
 投产日课见 `docs/production-daily-runbook.md`。
 
+- **当前状态入口（2026-10-12 整体评估 + 优先级清单 + 任务自循环）**：`docs/project-assessment-20261012.md`
 - Phase 0-0.7 验收结果与真实缺口清单：`docs/phase0-acceptance-report.md`
 - Phase 1 因子/模型/回测结果与方法论边界：`docs/phase1-acceptance-report.md`
 - Phase 2 模型生命周期管理+行为金融信号层结果：`docs/phase2-acceptance-report.md`

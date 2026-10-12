@@ -56,6 +56,27 @@ def is_limit_locked(
     return close >= up * (1 - tolerance), close <= down * (1 + tolerance)
 
 
+DELISTING_PERIOD_MIN_ASSET_CNY = 500_000.0  # 上交所交易规则 4.4.5 / 深交所交易规则 4.5.3（2026 年修订）
+
+
+def is_delisting_period(name: str | None) -> bool:
+    """退市整理期标的：深市简称后缀“退”，沪市简称前缀“退市”（两所风险揭示书原文）。
+
+    个人投资者买入退市整理股票须满足 2 年交易经历且前 20 个交易日日均资产
+    不低于 50 万元（上交所 4.4.5、深交所 4.5.3，2026 年修订版），并签署风险揭示书。
+    万元级账户在券商端会被直接拒单，因此这类标的对本项目的用户不可买入。
+    """
+    if not name:
+        return False
+    text = str(name).strip()
+    return text.startswith("退市") or text.endswith("退")
+
+
+def retail_can_buy_delisting_period(account_asset_cny: float, years_trading: float = 0.0) -> bool:
+    """万元级账户的默认答案是 False；满足 50 万元 + 2 年时返回 True（仍需签风险揭示书）。"""
+    return account_asset_cny >= DELISTING_PERIOD_MIN_ASSET_CNY and years_trading >= 2.0
+
+
 def is_too_new(list_date: dt.date | None, as_of: dt.date, min_listed_days: int = 60) -> bool:
     """次新过滤：默认上市不满 60 个自然日（约 2 个月），可配置。"""
     if list_date is None:

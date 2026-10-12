@@ -9,9 +9,11 @@ import pandas as pd
 from research.a_share_rules import (
     ST_LIMIT_CHANGE_DATE,
     apply_costs,
+    is_delisting_period,
     is_limit_locked,
     is_too_new,
     limit_pct,
+    retail_can_buy_delisting_period,
     round_trip_cost_rate,
 )
 from research.factors import compute_price_factors, mom_12_1
@@ -29,6 +31,17 @@ def test_limit_rules() -> None:
     assert up and not down
     assert is_too_new(dt.date(2026, 8, 1), dt.date(2026, 8, 20), 60)
     assert not is_too_new(dt.date(2026, 1, 1), dt.date(2026, 8, 1), 60)
+
+
+def test_delisting_period_rules() -> None:
+    assert is_delisting_period("元道退")  # 深市后缀
+    assert is_delisting_period("退市海润")  # 沪市前缀
+    assert not is_delisting_period("海鸥住工")
+    assert not is_delisting_period("退而求其次")  # “退”在中间
+    assert not is_delisting_period(None)
+    assert not retail_can_buy_delisting_period(10_000.0, 5.0)
+    assert not retail_can_buy_delisting_period(600_000.0, 1.0)
+    assert retail_can_buy_delisting_period(600_000.0, 2.0)
 
 
 def test_costs() -> None:
@@ -77,6 +90,7 @@ def test_validation_no_overlap() -> None:
 
 if __name__ == "__main__":
     test_limit_rules()
+    test_delisting_period_rules()
     test_costs()
     test_factors_and_labels()
     test_validation_no_overlap()
