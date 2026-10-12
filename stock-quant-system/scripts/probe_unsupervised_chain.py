@@ -380,14 +380,14 @@ def probe_shadow_report_file(log: ProbeLog) -> None:
 
 
 def probe_stale_clear(log: ProbeLog) -> None:
-    from scripts.run_weekend_shadow_chain import _clear_stale_pipeline_lock, _ingest_ok
+    from common.ingestion_engine.pipeline_state import clear_stale_pipeline_lock
+    from scripts.run_weekend_shadow_chain import _ingest_ok
 
     assert _ingest_ok({"a": {"status": "ok"}, "_meta": {}})
     assert not _ingest_ok({"a": {"status": "failed"}})
     log.emit("OK", "_ingest_ok 单测逻辑")
-    # 不应在无锁时爆炸
-    _clear_stale_pipeline_lock(max_age_hours=2.0)
-    log.emit("OK", "_clear_stale_pipeline_lock 可调用")
+    clear_stale_pipeline_lock(max_age_hours=2.0)
+    log.emit("OK", "clear_stale_pipeline_lock 可调用")
 
 
 def main() -> int:

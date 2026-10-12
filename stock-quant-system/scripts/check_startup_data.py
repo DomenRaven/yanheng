@@ -12,6 +12,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from common.db import get_db_path, get_ui_connection, init_schema
+from common.ingestion_engine.pipeline_state import clear_stale_pipeline_lock
 from common.warehouse_readiness import assess_warehouse_readiness, ingestion_update_in_progress
 
 
@@ -19,6 +20,13 @@ def main() -> int:
     if not get_db_path().is_file():
         print("BLOCK: 仓库不存在 → python -m scripts.run_daily_refresh --profile bootstrap")
         return 2
+
+    cleared = clear_stale_pipeline_lock()
+    if cleared and cleared.get("action") == "aborted_stale":
+        print(
+            f"WARN: 已清除陈旧灌库断点 run_id={cleared.get('run_id')} "
+            f"age_h={cleared.get('age_h')}"
+        )
 
     if ingestion_update_in_progress():
         print("BUSY: 灌库进行中 → python -m scripts.watch_data_update --interval 30")

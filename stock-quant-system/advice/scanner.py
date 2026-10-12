@@ -1,9 +1,10 @@
 """
 全市场每日打分排序输出（"今日候选清单"）。
 
-流程：加载 mlops/registry 的**冠军模型**（只读 `champion.json` 指向的 run，见
-`mlops/retrain_schedule.py` 与规格 M1）。**禁止**回退到「最新训练文件夹」。
-缺少 champion.json 或 run 目录不存在时直接失败，以免静默用挑战者/未晋升模型打生产分。
+流程：沪深池加载「当前选中的打分模型」（默认仍是冠军指针；也可切到
+`model_catalog.json` 里登记的回归树，见 `advice/model_selection.py`）。
+北交所池只读该池冠军。**禁止**回退到「最新训练文件夹」。
+缺少冠军指针、或选中的 run 没有 model.pkl 时直接失败。
 -> 用 research/panel.py 的 build_asof_snapshot() 取"最近一个已同步的全市场交易日"的
 point-in-time因子快照 -> 用模型打分排序 -> 剔除当天停牌/涨停封死（买不进）的股票 ->
 对Top-N候选叠加 behavior/ 行为金融代理指标做冲突提示 -> 输出候选清单，同时把预测分数
@@ -35,6 +36,7 @@ def _load_champion_model(
     *,
     pool_id: str = "hs",
 ) -> tuple[object, dict]:
+    """只读冠军指针。测试与晋升逻辑用这个，不看界面上的切换。"""
     from advice.champion_registry import load_champion_model
 
     model, metadata = load_champion_model(registry_dir, pool_id=pool_id)
@@ -44,6 +46,23 @@ def _load_champion_model(
         metadata.get("run_id"),
         metadata.get("trained_at"),
         metadata.get("champion_file"),
+    )
+    return model, metadata
+
+
+def _load_scoring_model(
+    registry_dir: str = "mlops/registry",
+    *,
+    pool_id: str = "hs",
+) -> tuple[object, dict]:
+    from advice.model_selection import load_scoring_model
+
+    model, metadata = load_scoring_model(registry_dir, pool_id=pool_id)
+    logger.info(
+        "加载池 %s 打分模型 run_id=%s selection=%s",
+        pool_id,
+        metadata.get("run_id"),
+        metadata.get("selection"),
     )
     return model, metadata
 
@@ -96,7 +115,8 @@ def _attach_behavior_signals(conn, symbols: list[str], as_of_date: str) -> pd.Da
             warnings.append("浮盈筹码集中")
         if pd.notna(row.get("dt_count")) and row["dt_count"] >= 3:
             warnings.append("游资高频出没")
-        div = row.get("divergence_flag") or ""
+        div = row.get("divergence_flag")
+        div = str(div) if pd.notna(div) else ""
         if "大单卖出小单买入" in div:
             warnings.append("大单卖出小单买入(散户接盘风险)")
         return "；".join(warnings) if warnings else "无冲突"
@@ -117,7 +137,7 @@ def run_scan(
     from common.db import get_connection, init_schema
     from research.panel import build_asof_snapshot
 
-    model, metadata = _load_champion_model(registry_dir, pool_id=pool_id)
+    model, metadata = _load_scoring_model(registry_dir, pool_id=pool_id)
     feature_cols = metadata["feature_cols"]
 
     snapshot = build_asof_snapshot()

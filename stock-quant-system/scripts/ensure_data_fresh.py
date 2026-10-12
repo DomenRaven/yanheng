@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -14,7 +15,27 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from common.db import get_db_path, get_ui_connection, init_schema
+from common.ingestion_engine.pipeline_state import clear_stale_pipeline_lock
 from common.warehouse_readiness import assess_warehouse_readiness, ingestion_update_in_progress
+
+
+def _home_python() -> Path:
+    """与计划任务一致：用 pyvenv home，避免 Windows venv 启动器双进程抢 DuckDB。"""
+    cfg = _ROOT / ".venv" / "pyvenv.cfg"
+    if cfg.is_file():
+        home = None
+        for line in cfg.read_text(encoding="utf-8").splitlines():
+            if line.strip().lower().startswith("home"):
+                home = line.split("=", 1)[1].strip()
+                break
+        if home:
+            py = Path(home) / "python.exe"
+            if py.is_file():
+                return py
+    venv_py = _ROOT / ".venv" / "Scripts" / "python.exe"
+    if venv_py.is_file():
+        return venv_py
+    return Path(sys.executable)
 
 
 def main() -> int:
@@ -61,17 +82,25 @@ def main() -> int:
         print("\n加 --apply 可在后台启动: python -m scripts.run_daily_refresh --profile", profile)
         return 1
 
+    cleared = clear_stale_pipeline_lock()
+    if cleared and cleared.get("action") == "aborted_stale":
+        print(f"已清除陈旧灌库断点 run_id={cleared.get('run_id')}")
+
     if ingestion_update_in_progress():
         print("已有流水线断点/运行中，请: python -m scripts.run_data_update --resume")
         return 1
 
-    py = _ROOT / ".venv" / "Scripts" / "python.exe"
-    if not py.is_file():
-        py = Path(sys.executable)
-    cmd = [str(py), "-m", "scripts.run_daily_refresh", "--profile", profile]
+    py = _home_python()
+    cmd = [str(py), "-u", "-m", "scripts.run_daily_refresh", "--profile", profile]
     log_dir = _ROOT / "data" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"ensure_data_fresh_{profile}.log"
+    env = os.environ.copy()
+    venv = _ROOT / ".venv"
+    site = venv / "Lib" / "site-packages"
+    env["VIRTUAL_ENV"] = str(venv)
+    env["PYTHONPATH"] = str(site)
+    env["PYTHONNOUSERSITE"] = "1"
     print("启动:", " ".join(cmd), "日志:", log_path)
     with open(log_path, "a", encoding="utf-8") as logf:
         subprocess.Popen(
@@ -79,6 +108,7 @@ def main() -> int:
             cwd=str(_ROOT),
             stdout=logf,
             stderr=subprocess.STDOUT,
+            env=env,
             creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
         )
     print("已在后台启动；监测: python -m scripts.watch_data_update")

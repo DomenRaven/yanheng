@@ -37,6 +37,7 @@ $venv = ".venv\Scripts\python.exe"
 断点文件：`data/ingestion_pipeline_state.json`（与 `warehouse.duckdb` 同目录）。
 
 Windows 计划任务一键注册：`docs/manuals/windows-scheduled-maintenance.md`（`scripts/install_windows_maintenance_tasks.ps1`）。
+计划任务入口必须走 `invoke_scheduled_*.ps1`（内部 `yanheng_scheduled_python.ps1`：home python + `cmd` 重定向）。不要在 `$ErrorActionPreference=Stop` 下直接 `& .venv\Scripts\python.exe`——logging/tqdm 的 stderr 会把任务杀掉，日志只剩 header。空步骤假锁由 `clear_stale_pipeline_lock` 标成 `aborted_stale`。
 
 ## 北交所注意（2026-09-18）
 

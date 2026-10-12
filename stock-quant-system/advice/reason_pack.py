@@ -56,15 +56,15 @@ def build_reason_pack(row: pd.Series) -> dict[str, Any]:
         conflicts.append({
             "type": "behavior",
             "ref": "conflict_flag",
-            "detail": f"行为金融冲突（反方，不改排名）: {flag}",
+            "detail": f"行为提示: {flag}",
         })
 
     rank_bit = f"排名第{int(row['rank'])}" if pd.notna(row.get("rank")) else "未排名"
     if conflicts:
         contra = "；".join(c["detail"].split(": ", 1)[-1] for c in conflicts)
-        one_liner = f"{rank_bit}。多头看因子/模型，但存在冲突：{contra}。冲突只提示、不改排序。"
+        one_liner = f"{rank_bit}。模型排序靠前，同时有冲突：{contra}。"
     else:
-        one_liner = f"{rank_bit}。因子与行为代理暂无冲突提示；排序仍只来自冠军模型。"
+        one_liner = f"{rank_bit}。因子与行为代理暂无冲突提示。"
 
     return {
         "factors": factors,

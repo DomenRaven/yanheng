@@ -123,6 +123,10 @@ def _plain_summary(action: str, **kw) -> str:
     if action == "watch":
         if kw.get("not_tradable"):
             return "今日无法交易（停牌或涨跌停封死），请等待可交易后再决定。"
+        if kw.get("sizing_block"):
+            return (
+                "排序靠前。按止损距离、单票不超过净值 15% 和可用现金，买不足 1 手，先观望。"
+            )
         return "暂时没有特别强的信号，建议先观望。"
     return ""
 
@@ -450,7 +454,9 @@ def enrich_cards_with_sizing(
                 c["action"] = "watch"
                 c["confidence"] = 0.0
                 c["risks"] = list(c.get("risks") or []) + [sz.reason or "以损定仓后无法买入 1 手"]
-                c["plain_summary"] = _plain_summary("watch")
+                c["plain_summary"] = _plain_summary(
+                    "watch", sizing_block=sz.reason or "买不足 1 手"
+                )
                 c["size_shares"] = 0
                 c["invalid_if"] = actionable_invalid_if_watch()
             else:
@@ -661,7 +667,6 @@ def generate_daily_advice(
     pool_id: str = "hs",
 ) -> dict:
     """一站式入口：按池扫描 + 持仓建议 + 落库。pool_id=hs|bj。"""
-    from advice.champion_registry import load_champion_pointer
     from advice.entry_rules import build_tomorrow_todos
     from advice.scanner import run_scan
     from common.db import get_connection, init_schema
@@ -735,17 +740,20 @@ def generate_daily_advice(
             held_symbols,
             exchange_map,
         )
+        # MR-A：市场状态只标注，不改 action / 股数（规格 requirements-market-regime）
+        from advice.market_regime import annotate_cards, load_market_regime
+
+        market = load_market_regime(conn)
+        all_cards = annotate_cards(all_cards, market)
         position_cards = [c for c in all_cards if c["symbol"] in held_symbols]
         watchlist_cards = [c for c in all_cards if c["symbol"] not in held_symbols]
         tomorrow_todos = build_tomorrow_todos(
             all_cards, signal_d, conn, max_items=3, allow_bj_open=allow_bj_open
         )
 
-        model_run_id = None
-        try:
-            model_run_id = load_champion_pointer("mlops/registry", pool_id)["run_id"]
-        except FileNotFoundError:
-            pass
+        from advice.model_selection import resolve_scoring_run_id
+
+        model_run_id = resolve_scoring_run_id(pool_id)
         persist_advice_cards(
             conn, all_cards, str(trade_date), model_run_id, pool_id=pool_id
         )

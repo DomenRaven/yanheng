@@ -79,9 +79,8 @@ def compute_open_size(
             by_cash = sh
             break
 
-    candidates = [by_risk, by_weight, by_cash]
-    viable = [c for c in candidates if c >= 100]
-    shares = min(viable) if viable else 0
+    # 某一约束取整后为 0（买不足 1 手）必须生效，不能把它从 min 里丢掉、只剩现金上限。
+    shares = min(by_risk, by_weight, by_cash)
 
     if shares < 100:
         return SizeResult(

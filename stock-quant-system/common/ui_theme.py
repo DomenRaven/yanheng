@@ -61,10 +61,11 @@ _GLOSSARY: dict[str, str] = {
                 "RankIC 与现任比较，达标才写入 champion_hs.json / champion_bj.json。"
                 "其它 run 文件夹只是历史留痕；扫描不会自动用「最新文件夹」。"
                 "沪深与北交所各一份冠军，互不串池。",
-    "分池扫描": "沪深股票与北交所股票分开排序：沪深用沪深冠军，北交所用北交所冠军。"
-                "页脚与首页会分别显示两池 run 编号与训练面板区间；避免微盘风格淹没主板名单。",
-    "坚持度": "多次掘金扫描中反复出现在前 50 名的次数。用来观察名单是否稳定，"
-              "不是荐股，也不是胜率。",
+    "分池扫描": "沪深股票与北交所股票分开排序。沪深用侧栏当前选中的打分模型（默认是沪深冠军，也可换成回归树）；"
+                "北交所始终用北交所冠军。页脚与首页会分别显示两池 run 编号；避免微盘风格淹没主板名单。",
+    "打分模型": "给沪深股票排序用的模型。默认是冠军指针里的版本。换成「回归树」只改变排序分数，"
+                "不改冠军文件，也不改买多少股和 ±8% 止盈止损。北交所不走这个开关。",
+    "坚持度": "多次掘金扫描中反复出现在前 50 名的次数，用来看这份名单稳不稳。",
     "分布稳定性": "衡量「当前数据分布」与「训练模型时的数据分布」差了多少，用来提前发现市场结构变化。",
     "止盈止损": "止损：亏到约定比例后卖出止血；止盈：赚到约定比例后减仓锁定。本系统默认 8%，"
                 "与训练模型标签使用的阈值一致。",
@@ -109,6 +110,38 @@ def _cached_warehouse_readiness() -> dict:
         conn.close()
 
 
+def render_hs_model_switch(key_prefix: str) -> None:
+    """沪深打分模型按钮。选择写在 mlops/registry/active_hs_model.json，各页共用。"""
+    from advice.model_selection import get_active_hs_choice, list_hs_choices, set_active_hs_choice
+
+    choices = list_hs_choices()
+    active = get_active_hs_choice()
+    st.caption("沪深扫描和建议用下面选中的模型。北交所仍用北交所冠军。股数和 ±8% 止盈止损不变。")
+    cols = st.columns(len(choices) or 1)
+    for col, item in zip(cols, choices):
+        is_on = item["choice_id"] == active
+        ic = item.get("rank_ic")
+        ic_s = f"{ic:.4f}" if isinstance(ic, (int, float)) else "—"
+        label = item["label"] if is_on else f"改用{item['label']}"
+        if col.button(
+            label,
+            key=f"{key_prefix}_model_{item['choice_id']}",
+            type="primary" if is_on else "secondary",
+            disabled=not item["ready"] or is_on,
+            help=f"run {item.get('run_id') or '—'} · 样本外 RankIC {ic_s}",
+        ):
+            set_active_hs_choice(item["choice_id"])
+            st.session_state.pop("scan_by_pool", None)
+            st.session_state.pop("scan_result", None)
+            st.session_state.pop("advice_by_pool", None)
+            st.rerun()
+    current = next((c for c in choices if c["choice_id"] == active), None)
+    if current:
+        ic = current.get("rank_ic")
+        ic_s = f"{ic:.4f}" if isinstance(ic, (int, float)) else "—"
+        st.caption(f"当前沪深打分：{current['label']} · `{current.get('run_id') or '—'}` · RankIC {ic_s}")
+
+
 def _render_sidebar_status() -> None:
     with st.sidebar:
         st.markdown("### 研衡 · 数据状态")
@@ -132,6 +165,12 @@ def _render_sidebar_status() -> None:
         if st.button("刷新数据状态", key="sidebar_refresh_wh"):
             _cached_warehouse_readiness.clear()
             st.rerun()
+        st.divider()
+        st.markdown("**沪深打分模型**")
+        try:
+            render_hs_model_switch("side")
+        except Exception as exc:
+            st.caption(f"模型开关暂不可用：{exc}")
         st.divider()
         st.caption(
             "常用路径：持仓与建议 → 明日待办 → 模拟盘或复盘。"
@@ -292,6 +331,40 @@ def warehouse_data_end_date(conn) -> str | None:
     return None
 
 
+def render_market_weather(regime: dict) -> None:
+    """展示已算好的市场档位。禁止在这里重算均线或收益。"""
+    label = str(regime.get("label") or "不足")
+    headline = str(regime.get("headline") or "")
+    as_of = regime.get("as_of") or "—"
+    body = f"**市场天气：{label}**（沪深300，截止 {as_of}）\n\n{headline}"
+    extras = []
+    confirm_ret = regime.get("confirm_ret_n")
+    if confirm_ret is not None:
+        agree = regime.get("confirm_agrees")
+        agree_txt = "均线位置和沪深300相同" if agree else "均线位置和沪深300不同"
+        if agree is None:
+            agree_txt = "对照"
+        extras.append(f"上证近20日 {confirm_ret:+.1%}，{agree_txt}。")
+    spread = regime.get("style_spread")
+    if spread is not None:
+        gap = abs(spread)
+        who = (
+            f"沪深300近20日比中证1000多涨 {gap:.1%}。"
+            if spread >= 0
+            else f"中证1000近20日比沪深300多涨 {gap:.1%}。"
+        )
+        extras.append(who)
+    if extras:
+        body += "\n\n" + "".join(extras)
+    kind = regime.get("regime")
+    if kind == "defense":
+        st.warning(body)
+    elif kind == "offense":
+        st.success(body)
+    else:
+        st.info(body)
+
+
 def render_production_banners(conn) -> None:
     """投产环境：灌库只读 + 空库/滞后等投产阻塞说明。"""
     from common.db import is_read_only
@@ -351,8 +424,15 @@ def render_trust_footer(conn) -> None:
     except Exception:
         pass
 
+    from advice.model_selection import get_active_hs_choice, list_hs_choices
+
     hs = describe_champion(pool_id="hs")
     bj = describe_champion(pool_id="bj")
+    active = next((c for c in list_hs_choices() if c["choice_id"] == get_active_hs_choice()), None)
+    if active and active.get("run_id"):
+        scoring = f"沪深当前打分 {active['label']} {active['run_id']}"
+    else:
+        scoring = "沪深当前打分 —"
 
     pt = get_config().get("paper_trading") or {}
     slip = pt.get("slippage_bp", "—")
@@ -360,7 +440,7 @@ def render_trust_footer(conn) -> None:
     st.divider()
     st.caption(
         f"数据截止（前复权日线）：{data_end} · "
-        f"{hs['short']} · {bj['short']} · "
+        f"{scoring} · 冠军指针 {hs.get('run_id') or '—'} · {bj['short']} · "
         f"模拟：默认次日开盘价 ±{slip}bp（非盘口）；一键练习仅明日待办≤3；"
         f"待办北交所开仓：{'开' if allow_bj else '关'} · "
         "输出仅供个人研究辅助；模拟净值请勿直接当作实盘收益预期。"

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -107,3 +107,73 @@ def args_compatible(state: dict[str, Any], args_snapshot: dict[str, Any]) -> boo
     prev = state.get("args") or {}
     keys = ("only", "skip", "quotes_limit", "fundamentals_limit", "corporate_actions_limit", "tushare_limit")
     return all(prev.get(k) == args_snapshot.get(k) for k in keys)
+
+
+def _parse_state_ts(raw: object) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone(timedelta(hours=8)))
+    return ts
+
+
+def clear_stale_pipeline_lock(
+    *,
+    empty_max_age_minutes: float = 5.0,
+    max_age_hours: float | None = None,
+) -> dict[str, Any] | None:
+    """清掉「进程已死、断点仍 running」的假锁，避免启动自检永久 BUSY。
+
+    只动两类僵尸：
+    - ``steps`` 为空且超过 ``empty_max_age_minutes``（计划任务被 stderr 杀掉时常这样）
+    - ``interrupted`` 且 ``steps`` 为空
+
+    有真实步骤进度的 ``running`` **不**按墙钟超时清除——全市场 quotes 单步可达数小时，
+    应人工 ``--resume`` 或等进程自己写完。``max_age_hours`` 仅保留调用兼容，不再用于
+    有进度的 running 断点。
+    """
+    _ = max_age_hours
+    state = load_state()
+    if not state or state.get("status") not in ("running", "interrupted"):
+        return None
+
+    steps = state.get("steps") or {}
+    updated = _parse_state_ts(state.get("updated_at") or state.get("started_at"))
+    age_h: float | None = None
+    if updated is not None:
+        age_h = (datetime.now(updated.tzinfo) - updated).total_seconds() / 3600.0
+
+    empty = len(steps) == 0
+    empty_stale = (
+        empty
+        and age_h is not None
+        and age_h >= (empty_max_age_minutes / 60.0)
+    )
+    interrupted_empty = empty and state.get("status") == "interrupted"
+    if not (empty_stale or interrupted_empty):
+        logger.info(
+            "灌库断点仍视为有效 run_id=%s status=%s steps=%d age_h=%s",
+            state.get("run_id"),
+            state.get("status"),
+            len(steps),
+            None if age_h is None else round(age_h, 2),
+        )
+        return None
+
+    mark_run_finished(state, status="aborted_stale")
+    logger.warning(
+        "已清除陈旧灌库断点 run_id=%s empty=%s age_h=%s → aborted_stale",
+        state.get("run_id"),
+        empty,
+        None if age_h is None else round(age_h, 2),
+    )
+    return {
+        "action": "aborted_stale",
+        "run_id": state.get("run_id"),
+        "empty": empty,
+        "age_h": None if age_h is None else round(age_h, 2),
+    }

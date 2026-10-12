@@ -75,6 +75,8 @@ try:
     with c2:
         st.caption(
             "日更任务：`StockQuant-ShadowFarm`（每天 03:00，盯市全部未满 60 天账户）。"
+            "若和灌库同时启动，会等到灌库结束再记账。"
+            "本周还没有 8 户时，日更会补建并按当时的建议换一次票。"
             "换票任务：`StockQuant-WeekendResearch`（周六 09:00，灌库→双池建议→新建本周 8 户）。"
         )
 

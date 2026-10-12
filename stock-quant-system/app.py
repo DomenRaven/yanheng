@@ -17,12 +17,14 @@ import streamlit as st
 
 from advice.advice_engine import build_priority_digest, cards_for_digest, load_latest_advice_cards
 from advice.champion_registry import describe_champion
+from advice.model_selection import get_active_hs_choice, list_hs_choices
 from common.symbol_lookup import render_symbol_picker
 from common.ui_theme import (
     apply_theme,
     close_warehouse,
     connect_warehouse,
     render_advice_card,
+    render_market_weather,
     render_production_banners,
     section_header,
     term_help,
@@ -59,7 +61,8 @@ try:
         f"¥{total_pnl:,.0f}" if position_summary is not None and not position_summary.empty else "—",
         delta=f"{total_pnl:,.0f}" if total_pnl else None,
     )
-    col4.metric("沪深池冠军", hs["run_id"] or "未设置")
+    _hs_choice = next((c for c in list_hs_choices() if c["choice_id"] == get_active_hs_choice()), None)
+    col4.metric("沪深当前打分", (_hs_choice or {}).get("label") or "现行冠军")
     col5.metric("北交所池冠军", bj["run_id"] or "未就绪")
     with st.expander("如何区分两池冠军？（点开说明）", expanded=False):
         term_help("冠军模型")
@@ -70,13 +73,16 @@ try:
 | 沪深（sh+sz） | `champion_hs.json` | `{hs['run_id'] or '—'}` | `{hs['date_range'] or '—'}` | `{hs['walk_forward_rank_ic'] if hs['walk_forward_rank_ic'] is not None else '—'}` |
 | 北交所（bj） | `champion_bj.json` | `{bj['run_id'] or '—'}` | `{bj['date_range'] or '—'}` | `{bj['walk_forward_rank_ic'] if bj['walk_forward_rank_ic'] is not None else '—'}` |
 
-- **谁在用**：掘金选「沪深池」只加载上表沪深行；选「北交所池」只加载北交所行。建议引擎观察名单默认走沪深池。
-- **怎么当上冠军**：挑战者用同一套 Walk-Forward 与现任比；达标才改指针。不是「文件夹日期最新」。
+- **谁在用**：北交所扫描只加载上表北交所行。沪深扫描和建议用侧栏「沪深打分模型」：默认是上表沪深冠军，也可以改成回归树。换模型不改冠军指针。
+- **怎么当上冠军**：挑战者用同一套 Walk-Forward 与现任比，达标才写入冠军文件。回归树可以切换来打分，冠军文件仍指向现行冠军。
 - **和日频掘金日期不同**：训练面板按月末截面（上表区间）；掘金用最近交易日快照（见页脚数据截止）。
 """
         )
 
     st.divider()
+    from advice.market_regime import load_market_regime
+
+    render_market_weather(load_market_regime(conn))
 
     st.subheader("🎯 今日决策速览")
     digest_pool = st.radio(

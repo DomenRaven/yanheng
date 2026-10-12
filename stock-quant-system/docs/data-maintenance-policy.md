@@ -148,6 +148,8 @@ powershell -File .\scripts\install_windows_maintenance_tasks.ps1 -IncludeLogonAu
 
 | 现象 | 处理 |
 |------|------|
+| 计划任务日志只有文件头、exit=1、断点 `running` 且 steps 为空 | PowerShell `$ErrorActionPreference=Stop` 把 Python stderr（logging/tqdm）当成错误杀掉。包装脚本须走 `yanheng_scheduled_python.ps1`（cmd 重定向）；启动自检会把空步骤假锁标成 `aborted_stale` |
+| 影子仓计划任务失败、净值停在旧日、本周 8 户未建 | 开机后 `MidnightCatchup`（00:30）和 `ShadowFarm`（03:00）会同时补跑，灌库占写锁时影子仓约 20 秒即失败。`scripts.run_shadow_farm` 会先等灌库结束再记账；本周缺户时日更补建 |
 | `interrupted` 仅 universe ok | `--resume`，skip 与上次一致 |
 | quotes 大量 failed（非 bj） | 查 `sync_log`、网络；勿开第二个 full incremental |
 | reference 巨潮熔断 | 已 `consecutive_fail_abort`；可 `prefer_tushare: true` 或周末再试 |
@@ -184,7 +186,8 @@ powershell -File .\scripts\install_windows_maintenance_tasks.ps1 -IncludeLogonAu
 - **AkShare 东财 bj**：受本机代理/VPN 影响大；日更跳过 bj 东财、改走 Tushare 轻量步是工程权衡，非理论最优「全市场同源同日截面」。
 - **`tushare_behavior` 周更**：部分 Must UI 不依赖；若未来 Must 化需单独评估耗时与积分。
 - **计划任务依赖本机开机**：00:30 catch-up 不能替代云侧调度；长期离线需手动 `weekday_decision`。
+- **PowerShell stderr**：Windows PowerShell 5.1 在 `Stop` 下会把本机程序的 stderr 升级为终止错误。2026-09-20 开机后 `MidnightCatchup`/`WeekendResearch` 因此只留下 71 字节日志头。已改为 `cmd.exe` 重定向；若再出现「只有 header、没有 `=== exit=`」就是包装脚本回归。
 - **incremental 旧 profile** 仍含 bj 东财；文档与计划任务应改用 **`weekday_decision`**，避免回归「拖死整晚」。
 - **轻量步与全量步重叠**：`tushare_bse_quotes` ⊂ `tushare_prices` 的 bj 子任务；同日勿并行两个写者。
 
-*文档版本：2026-09-18，与 `tushare_bse_quotes` 日更步及 `refresh_adj` 强制刷新经验同步。*
+*文档版本：2026-09-20，补充计划任务 stderr 杀进程与空步骤假锁处理。*

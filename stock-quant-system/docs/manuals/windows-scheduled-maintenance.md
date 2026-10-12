@@ -45,6 +45,8 @@ powershell -File .\scripts\install_windows_maintenance_tasks.ps1 -IncludeLogonAu
 `data/logs/scheduled_<profile>_yyyyMMdd_HHmmss.log`  
 登录补灌：`data/logs/startup_data_*.log`
 
+包装脚本通过 `scripts/yanheng_scheduled_python.ps1` 调用 **pyvenv home 解释器**，并把 stdout/stderr 交给 `cmd.exe` 追加进日志。不要在计划任务里直接 `& .venv\Scripts\python.exe` 且 `$ErrorActionPreference = "Stop"`：Python logging/tqdm 打在 stderr，任务会被立刻杀掉，日志只剩一行 header。
+
 ## 卸载
 
 ```powershell
@@ -60,6 +62,7 @@ powershell -File .\scripts\uninstall_windows_maintenance_tasks.ps1
 | `scripts/invoke_scheduled_refresh.ps1` | 日更入口 → `run_daily_refresh` |
 | `scripts/invoke_scheduled_shadow_farm.ps1` | 每日影子仓 → `run_shadow_farm` |
 | `scripts/invoke_scheduled_weekend_shadow_chain.ps1` | 周末链路 → 灌库 + 双池建议 + 影子仓 |
+| `scripts/yanheng_scheduled_python.ps1` | 计划任务共用：home python + cmd 重定向 |
 | `scripts/invoke_startup_data_maintenance.ps1` | 登录任务入口 |
 
 策略说明见 `docs/data-maintenance-policy.md`。

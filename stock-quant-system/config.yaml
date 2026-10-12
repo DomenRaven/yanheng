@@ -110,6 +110,16 @@ llm:
   api_key_env: "DASHSCOPE_API_KEY"
   model: qwen-plus
 
+# ---------- 市场状态 MR-A（只展示；不改仓。见 docs/requirements-market-regime-20260921.md） ----------
+market_regime:
+  benchmark: sh000300          # 唯一改档依据：沪深300
+  confirm_index: sh000001      # 上证，只对照、不投票
+  style_index: sh000852        # 中证1000，只算与沪深300的近20日差
+  ma_window: 20
+  offense_ret: 0.03            # 均线之上且近20日收益达到此值 → 进攻
+  defense_ret: -0.03           # 均线之下且近20日收益不高于此值 → 防守
+  lookback_rows: 80
+
 # ---------- 投产就绪（空库 / 假新 / 缺 limit_price 等均阻塞决策链） ----------
 production_readiness:
   min_universe_symbols: 3000

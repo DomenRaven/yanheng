@@ -187,9 +187,50 @@ def test_substep_mark_clear_on_step_ok() -> None:
             ps.get_db_path = orig  # type: ignore[assignment]
 
 
+def test_clear_stale_empty_running() -> None:
+    import json
+    from common.ingestion_engine import pipeline_state as ps
+    from common.ingestion_engine.pipeline_state import clear_stale_pipeline_lock, new_run, save_state
+
+    with tempfile.TemporaryDirectory() as tmp:
+        fake_db = Path(tmp) / "t.duckdb"
+        orig = ps.get_db_path
+        ps.get_db_path = lambda: fake_db  # type: ignore[assignment]
+        try:
+            state = new_run({"only": "universe"})
+            save_state(state)
+            recent = clear_stale_pipeline_lock(empty_max_age_minutes=5)
+            assert recent is None, "刚写入的空 running 不应立即清掉"
+
+            path = ps.state_file_path()
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["started_at"] = "2026-09-20T08:00:00+08:00"
+            payload["updated_at"] = "2026-09-20T08:00:00+08:00"
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            cleared = clear_stale_pipeline_lock(empty_max_age_minutes=5)
+            assert cleared is not None
+            assert cleared["action"] == "aborted_stale"
+            after = ps.load_state()
+            assert after is not None
+            assert after["status"] == "aborted_stale"
+
+            payload["status"] = "running"
+            payload["steps"] = {"universe": {"status": "ok"}}
+            payload["updated_at"] = "2026-09-20T08:00:00+08:00"
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            kept = clear_stale_pipeline_lock(empty_max_age_minutes=0)
+            assert kept is None
+            kept_state = ps.load_state()
+            assert kept_state is not None
+            assert kept_state["status"] == "running"
+        finally:
+            ps.get_db_path = orig  # type: ignore[assignment]
+
+
 def main() -> None:
     test_pipeline_state_resume_skip()
     test_substep_mark_clear_on_step_ok()
+    test_clear_stale_empty_running()
     test_writer_runs_on_dedicated_thread()
     test_backpressure_limits_queue()
     test_fetch_write_overlap_while_writer_busy()

@@ -19,6 +19,13 @@ def test_10k_cannot_buy_expensive_lot():
     print("OK: 1万账户买不起 ¥500/股 1 手 → shares=0", sz.reason)
 
 
+def test_10k_mid_price_cannot_ignore_risk_and_weight():
+    """1 手买得起，但 1% 风险和 15% 单票上限都不足 1 手时必须是 0，不能只按现金买。"""
+    sz = compute_open_size(10_000.0, price=44.92, stop_price=41.33, exchange="sh")
+    assert sz.shares == 0, sz
+    assert sz.size_pct_nav == 0.0
+
+
 def test_10k_can_buy_cheap_lot():
     eq = 10_000.0
     sz = compute_open_size(eq, price=8.0, stop_price=7.2, exchange="sz")
@@ -30,5 +37,6 @@ def test_10k_can_buy_cheap_lot():
 
 if __name__ == "__main__":
     test_10k_cannot_buy_expensive_lot()
+    test_10k_mid_price_cannot_ignore_risk_and_weight()
     test_10k_can_buy_cheap_lot()
     print("test_advice_sizing: all passed")

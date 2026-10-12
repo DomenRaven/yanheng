@@ -1,4 +1,4 @@
-# 登录时可选任务：检查就绪；未就绪且未在灌库时后台 ensure_data_fresh --apply。
+﻿# 登录时可选任务：检查就绪；未就绪且未在灌库时后台 ensure_data_fresh --apply。
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $Root

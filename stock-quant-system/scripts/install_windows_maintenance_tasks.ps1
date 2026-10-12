@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch] $IncludeLogonAutoApply,
     [string] $WeekdayTime = "16:15",
     [string] $MidnightTime = "00:30",

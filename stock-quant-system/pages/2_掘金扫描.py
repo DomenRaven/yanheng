@@ -6,10 +6,12 @@ from pathlib import Path
 import streamlit as st
 
 from advice.champion_registry import describe_champion
+from advice.model_selection import get_active_hs_choice, list_hs_choices
 from common.ui_theme import (
     apply_theme,
     close_warehouse,
     connect_warehouse,
+    render_hs_model_switch,
     require_warehouse_for_decisions,
     term_help,
 )
@@ -22,8 +24,8 @@ require_warehouse_for_decisions(conn)
 
 col_cap, col_help1, col_help2 = st.columns([6, 1, 1])
 col_cap.caption(
-    "沪深池与北交所池使用**各自冠军模型**分别排序，不再混排。"
-    "切换上方扫描池时，下方前列候选 / 全量排名 / 坚持度会跟着换到该池缓存。"
+    "沪深池用侧栏或下方按钮选中的打分模型排序，北交所池只用北交所冠军，两池不混排。"
+    "切换扫描池或打分模型后，请重新运行扫描。"
 )
 with col_help1:
     term_help("分池扫描")
@@ -37,16 +39,29 @@ pool_label = st.radio(
     horizontal=True,
     key="scan_pool",
 )
-_champ = describe_champion(pool_id=pool_label)
-if _champ["ready"]:
-    st.info(
-        f"将使用 **{_champ['pool_label']}冠军** `{_champ['run_id']}` · "
-        f"训练面板 `{_champ['date_range']}` · "
-        f"样本外 RankIC `{_champ['walk_forward_rank_ic']}`"
-        "（与下方日频快照交易日可以不同）"
-    )
+if pool_label == "hs":
+    render_hs_model_switch("scan")
+    _choice = get_active_hs_choice()
+    _item = next((c for c in list_hs_choices() if c["choice_id"] == _choice), None)
+    if _item and _item["ready"]:
+        st.info(
+            f"本次沪深扫描使用 **{_item['label']}** `{_item['run_id']}` · "
+            f"样本外 RankIC `{_item['rank_ic']}`。"
+            "冠军指针不会因为这次切换而改变。"
+        )
+    else:
+        st.warning("沪深打分模型未就绪，无法扫描。")
 else:
-    st.warning(f"{_champ['pool_label']}冠军未就绪，无法扫描。请先完成该池重训晋升。")
+    _champ = describe_champion(pool_id="bj")
+    if _champ["ready"]:
+        st.info(
+            f"将使用 **北交所冠军** `{_champ['run_id']}` · "
+            f"训练面板 `{_champ['date_range']}` · "
+            f"样本外 RankIC `{_champ['walk_forward_rank_ic']}`"
+            "（与下方日频快照交易日可以不同）"
+        )
+    else:
+        st.warning("北交所冠军未就绪，无法扫描。请先完成该池重训晋升。")
 
 top_n = st.slider("显示前 N 名", min_value=10, max_value=200, value=50, step=10)
 
@@ -61,7 +76,7 @@ if legacy and isinstance(legacy, tuple):
         st.session_state["scan_by_pool"].setdefault("hs", (*legacy, "hs"))
 
 if st.button("🔄 运行最新扫描", type="primary"):
-    with st.spinner(f"正在加载 {pool_label} 池冠军并打分..."):
+    with st.spinner(f"正在加载 {'沪深当前打分模型' if pool_label == 'hs' else '北交所冠军'}并打分..."):
         from advice.scanner import run_scan
 
         try:
@@ -150,7 +165,7 @@ if cached:
     with tab3:
         from advice.scan_archive import persistence_full_attendance, persistence_hit_counts
 
-        st.caption("坚持度按**当前所选池**存档统计，**不是荐股、不是胜率**。")
+        st.caption("坚持度按**当前所选池**统计反复进入前 50 名的次数。")
         full5 = persistence_full_attendance(conn, pool_id=pool_label, window_runs=5, top_k=50)
         st.markdown("#### 近 5 次扫描全勤前 50")
         if full5.empty:

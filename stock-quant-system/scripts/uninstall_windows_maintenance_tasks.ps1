@@ -1,4 +1,4 @@
-# 移除 install_windows_maintenance_tasks.ps1 注册的任务。
+﻿# 移除 install_windows_maintenance_tasks.ps1 注册的任务。
 $ErrorActionPreference = "Stop"
 Import-Module ScheduledTasks -ErrorAction Stop
 

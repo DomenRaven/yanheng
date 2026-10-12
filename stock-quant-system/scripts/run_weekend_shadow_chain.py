@@ -23,6 +23,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from common.ingestion_engine.orchestrator import build_arg_parser, run_data_update  # noqa: E402
+from common.ingestion_engine.pipeline_state import (  # noqa: E402
+    clear_stale_pipeline_lock as _clear_stale_pipeline_lock,
+)
 from scripts.run_daily_refresh import PROFILE_ARGV  # noqa: E402
 
 logger = logging.getLogger("scripts.weekend_shadow_chain")
@@ -35,54 +38,6 @@ def _ingest_ok(results: dict[str, Any]) -> bool:
     if not steps:
         return False
     return all(isinstance(v, dict) and v.get("status") == "ok" for v in steps.values())
-
-
-def _clear_stale_pipeline_lock(*, max_age_hours: float = 2.0) -> dict[str, Any] | None:
-    """清掉空步骤/过久的 running 断点，避免 ensure_data_fresh / UI 永久显示「更新中」。
-
-    有真实步骤进度的断点不碰——应人工 ``--resume``。
-    """
-    from common.ingestion_engine.pipeline_state import load_state, mark_run_finished
-
-    state = load_state()
-    if not state or state.get("status") not in ("running", "interrupted"):
-        return None
-    steps = state.get("steps") or {}
-    updated = state.get("updated_at") or state.get("started_at") or ""
-    age_h: float | None = None
-    try:
-        # 2026-09-19T09:00:02+08:00
-        ts = dt.datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=dt.timezone(dt.timedelta(hours=8)))
-        age_h = (dt.datetime.now(ts.tzinfo) - ts).total_seconds() / 3600.0
-    except Exception:
-        age_h = None
-
-    empty = len(steps) == 0
-    stale = age_h is not None and age_h >= max_age_hours
-    if not (empty or stale):
-        logger.warning(
-            "检测到进行中的灌库断点 run_id=%s steps=%d age_h=%s，不自动清除",
-            state.get("run_id"),
-            len(steps),
-            age_h,
-        )
-        return {"action": "kept", "run_id": state.get("run_id"), "n_steps": len(steps)}
-
-    mark_run_finished(state, status="aborted_stale")
-    logger.warning(
-        "已清除陈旧灌库断点 run_id=%s empty=%s age_h=%s → aborted_stale",
-        state.get("run_id"),
-        empty,
-        None if age_h is None else round(age_h, 2),
-    )
-    return {
-        "action": "aborted_stale",
-        "run_id": state.get("run_id"),
-        "empty": empty,
-        "age_h": None if age_h is None else round(age_h, 2),
-    }
 
 
 def _run_weekend_ingest() -> dict[str, Any]:

@@ -55,23 +55,31 @@ def run_portfolio_backtest(
     oos_panel: pd.DataFrame,
     top_n: int = 30,
     cost_assumptions: CostAssumptions | None = None,
+    *,
+    use_tradability: bool = True,
 ) -> pd.DataFrame:
     """oos_panel 需含列: symbol, trade_date, pred_score, fwd_return, exchange。
-    每个 trade_date 按 pred_score 选 top_n 只可交易股票，等权持有到下期。"""
-    from common.db import get_connection
+    每个 trade_date 按 pred_score 选 top_n 只可交易股票，等权持有到下期。
 
+    use_tradability=False 时不读库（涨跌停/停牌都不剔除）。调用方必须在结果里
+    写明这一口径，不能和带过滤的 Top-N 混成同一个数字。
+    """
     cost_assumptions = cost_assumptions or CostAssumptions()
-    dates = sorted(oos_panel["trade_date"].unique())
-    symbols = oos_panel["symbol"].unique().tolist()
+    if use_tradability:
+        from common.db import get_connection
 
-    conn = get_connection()
-    try:
-        tradability = _load_tradability(conn, symbols, dates)
-    finally:
-        conn.close()
-
-    df = oos_panel.merge(tradability, on=["symbol", "trade_date"], how="left")
-    df["is_tradable"] = df["is_tradable"].fillna(True)  # limit_price表缺失（如早期历史）时不因此排除
+        dates = sorted(oos_panel["trade_date"].unique())
+        symbols = oos_panel["symbol"].unique().tolist()
+        conn = get_connection()
+        try:
+            tradability = _load_tradability(conn, symbols, dates)
+        finally:
+            conn.close()
+        df = oos_panel.merge(tradability, on=["symbol", "trade_date"], how="left")
+        df["is_tradable"] = df["is_tradable"].fillna(True)  # limit_price表缺失（如早期历史）时不因此排除
+    else:
+        df = oos_panel.copy()
+        df["is_tradable"] = True
 
     rows = []
     for date, grp in df.groupby("trade_date"):

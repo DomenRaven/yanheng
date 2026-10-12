@@ -15,6 +15,7 @@ from common.ui_theme import (
     close_warehouse,
     connect_warehouse,
     render_advice_card,
+    render_hs_model_switch,
     render_production_banners,
     section_header,
 )
@@ -92,7 +93,9 @@ advice_pool = st.radio(
     horizontal=True,
     key="advice_pool",
 )
-st.caption("本区只负责生成/查看建议。模拟成交请到下方「② 本机模拟盘」。")
+st.caption("本区只负责生成/查看建议。模拟成交请到下方「② 本机模拟盘」。沪深建议用当前选中的打分模型。")
+if advice_pool == "hs":
+    render_hs_model_switch("advice")
 
 if "advice_by_pool" not in st.session_state:
     st.session_state["advice_by_pool"] = {}
